@@ -7,6 +7,7 @@ export type Selection =
   | { kind: 'xfmr'; id: string }
   | { kind: 'gen'; id: string }
   | { kind: 'load'; id: string }
+  | { kind: 'breaker'; id: string }
   | null
 
 export interface DiagramHandle {
@@ -122,6 +123,15 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     g.addEventListener('click', () => selectCb(sel))
   }
 
+  const brkRects: Record<string, SVGRectElement> = {}
+  const drawBreaker = (id: string, x: number, y: number): void => {
+    const g = e('g', {})
+    host.appendChild(g)
+    brkRects[id] = e('rect', { x: x - 4.5, y: y - 4.5, width: 9, height: 9, rx: 1, class: 'brk closed' }, g)
+    e('rect', { x: x - 10, y: y - 10, width: 20, height: 20, class: 'hit' }, g)
+    clickable(g, { kind: 'breaker', id })
+  }
+
   // Live-updatable text nodes.
   const busVal: Record<string, [SVGTextElement, SVGTextElement]> = {}
   const lineVal: Record<string, [SVGTextElement, SVGTextElement]> = {}
@@ -156,11 +166,16 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     const d = `M ${l.from[0]} ${l.from[1]} L ${l.to[0]} ${l.to[1]}`
     e('path', { d, class: 'ln sketch' }, g)
     flowEls[l.id] = e('path', { d, class: 'flow off' }, g)
-    // breakers at both ends (red = closed; interaction arrives in Part 3)
-    for (const t of [0.16, 0.84]) {
-      const bx = l.from[0] + t * (l.to[0] - l.from[0])
-      const by = l.from[1] + t * (l.to[1] - l.from[1])
-      e('rect', { x: bx - 4.5, y: by - 4.5, width: 9, height: 9, class: 'brk closed' }, g)
+    // breakers at both ends (red closed / green open)
+    for (const [t, end] of [
+      [0.16, 'from'],
+      [0.84, 'to'],
+    ] as [number, 'from' | 'to'][]) {
+      drawBreaker(
+        `${l.id}:${end}`,
+        l.from[0] + t * (l.to[0] - l.from[0]),
+        l.from[1] + t * (l.to[1] - l.from[1]),
+      )
     }
     lineVal[l.id] = [
       text(g, l.tx, l.ty, 't-val'),
@@ -178,7 +193,7 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     for (const dy of [-7, 7]) {
       e('circle', { cx: xf.x, cy: xf.symY + dy, r: 9, class: 'xfmr-circle sketch' }, g)
     }
-    e('rect', { x: xf.x - 4.5, y: xf.brkY - 4.5, width: 9, height: 9, class: 'brk closed' }, g)
+    drawBreaker(`${xf.id}:brk`, xf.x, xf.brkY)
     if (xf.label) text(g, xf.lx!, xf.symY - 18, 't-sub', 'start', xf.label)
     xfmrVal[xf.id] = text(g, xf.lx ?? xf.x + (xf.x === 167 ? -12 : 12), xf.symY + 4, 't-sub', 'start', '')
     e('rect', { x: xf.x - 16, y: xf.symY - 22, width: 32, height: 44, class: 'hit' }, g)
@@ -236,7 +251,7 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
 
   return {
     update(snap, input) {
-      const offline = !snap.converged
+      const offline = !snap.converged && snap.buses.length === 0
       host.classList.toggle('offline', offline)
       document.getElementById('offline-banner')?.classList.toggle('show', offline)
       if (offline) return
@@ -244,9 +259,46 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
       const busById = new Map(snap.buses.map((b) => [b.id, b]))
       const brById = new Map(snap.branches.map((b) => [b.id, b]))
 
+      const breakerOpenOn = (branchId: string): boolean => {
+        const ln = input.lines.find((x) => x.id === branchId)
+        if (ln) return ln.brkFrom === false || ln.brkTo === false
+        return input.transformers.find((x) => x.id === branchId)?.brkClosed === false
+      }
+      const brkIsClosed = (id: string): boolean => {
+        const owner = id.split(':')[0]
+        const end = id.split(':')[1]
+        if (end === 'brk') {
+          return input.transformers.find((t) => t.id === owner)?.brkClosed !== false
+        }
+        const ln = input.lines.find((li) => li.id === owner)
+        if (!ln) return true
+        return (end === 'from' ? ln.brkFrom : ln.brkTo) !== false
+      }
+      for (const [id, rect] of Object.entries(brkRects)) {
+        rect.setAttribute('class', `brk ${brkIsClosed(id) ? 'closed' : 'open'}`)
+      }
+
+      // de-energized dimming
+      for (const b of snap.buses) {
+        selGroups.get(`bus:${b.id}`)?.classList.toggle('dead', !b.energized)
+      }
+      for (const br of snap.branches) {
+        selGroups.get(`${br.kind}:${br.id}`)?.classList.toggle('dead', !br.energized)
+      }
+      for (const [key, g] of selGroups) {
+        if (!key.startsWith('load:')) continue
+        const busId = key === 'load:IND_MAIN' ? 'IND_LV' : 'RES_LV'
+        g.classList.toggle('dead', !busById.get(busId)?.energized)
+      }
+
       for (const [id, [t1, t2]] of Object.entries(busVal)) {
         const b = busById.get(id)
         if (!b) continue
+        if (!b.energized) {
+          t1.textContent = 'DE-ENERGIZED'
+          t2.textContent = ''
+          continue
+        }
         t1.textContent = `${f1(b.kv, 1)} kV · ${b.vmagPu.toFixed(3)} pu`
         t2.textContent = `${f1(b.thetaDeg, 1)}°`
       }
@@ -255,6 +307,13 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
         const br = brById.get(l.id)
         if (!br) continue
         const [t1, t2] = lineVal[l.id]
+        if (!br.energized) {
+          t1.textContent = breakerOpenOn(l.id) ? 'OPEN' : 'DE-ENERGIZED'
+          t2.textContent = ''
+          t2.setAttribute('class', 't-sub')
+          flowEls[l.id].setAttribute('class', 'flow off')
+          continue
+        }
         t1.textContent = `${f1(br.fromMw)} MW · ${f1(br.fromMvar)} MVAR`
         t2.textContent = `${f0(br.ampsFrom)} A · ${f1(br.loadingPct, 0)}%`
         t2.setAttribute('class', loadingClass(br.loadingPct))
@@ -272,17 +331,22 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
 
       for (const xf of XFMRS) {
         const br = brById.get(xf.id)
-        if (!br) continue
         const t = xfmrVal[xf.id]
+        if (!br || !br.energized) {
+          t.textContent = ''
+          continue
+        }
         t.textContent = `${f1(br.loadingPct, 0)}%`
         t.setAttribute('class', loadingClass(br.loadingPct))
       }
       const su1 = brById.get('T_SU1')
       const su2 = brById.get('T_SU2')
-      if (su1 && su2) {
+      if (su1?.energized && su2?.energized) {
         const pct = Math.max(su1.loadingPct, su2.loadingPct)
         xfmrVal['T_SU'].textContent = `${f1(pct, 0)}%`
         xfmrVal['T_SU'].setAttribute('class', loadingClass(pct))
+      } else {
+        xfmrVal['T_SU'].textContent = ''
       }
 
       const gen = snap.gens[0]
@@ -293,17 +357,29 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
       }
 
       const ind = input.loads.find((l) => l.id === 'IND_MAIN')
+      const indLive = busById.get('IND_LV')?.energized
       if (ind) {
-        indVal[0].textContent = `${f1(ind.mw)} MW · ${f1(ind.mvar)} MVAR`
-        const pf = Math.cos(Math.atan2(ind.mvar, ind.mw))
-        indVal[1].textContent = `${pf.toFixed(2)} PF · ${f1(Math.hypot(ind.mw, ind.mvar))} MVA`
+        if (!indLive) {
+          indVal[0].textContent = 'DE-ENERGIZED'
+          indVal[1].textContent = ''
+        } else {
+          indVal[0].textContent = `${f1(ind.mw)} MW · ${f1(ind.mvar)} MVAR`
+          const pf = Math.cos(Math.atan2(ind.mvar, ind.mw))
+          indVal[1].textContent = `${pf.toFixed(2)} PF · ${f1(Math.hypot(ind.mw, ind.mvar))} MVA`
+        }
       }
 
+      const resLive = busById.get('RES_LV')?.energized
       for (const f of FEEDERS) {
         const ld = input.loads.find((l) => l.id === `RES_F${f.n}`)
         if (!ld) continue
-        feederVal[f.n][0].textContent = `${f1(ld.mw)} MW`
-        feederVal[f.n][1].textContent = `${f1(ld.mvar)} MVAR`
+        if (!resLive) {
+          feederVal[f.n][0].textContent = '—'
+          feederVal[f.n][1].textContent = ''
+        } else {
+          feederVal[f.n][0].textContent = `${f1(ld.mw)} MW`
+          feederVal[f.n][1].textContent = `${f1(ld.mvar)} MVAR`
+        }
       }
     },
 

@@ -162,6 +162,38 @@ export function createPanel(
       deselectHook()
     })
 
+    if (sel.kind === 'breaker') {
+      const id = sel.id
+      const closed = state.breakers[id] !== false
+      const owner = id.split(':')[0]
+      const end = id.split(':')[1]
+      const line = base.lines.find((l) => l.id === owner)
+      const xf = base.transformers.find((t) => t.id === owner)
+      let tag = ''
+      if (line) {
+        const endBus = end === 'from' ? line.from : line.to
+        tag = `${base.buses.find((b) => b.id === endBus)?.label ?? endBus} end`
+      } else if (xf) {
+        tag = `${base.buses.find((b) => b.id === xf.hv)?.label ?? xf.hv} side`
+      }
+      const c = card(`Breaker ${owner}`, tag)
+      rows = [
+        { label: 'Status', bind: () => (state.breakers[id] !== false ? 'CLOSED' : 'OPEN') },
+        { label: 'Convention', bind: () => 'red closed · green open' },
+      ]
+      kvList(c, rows)
+      const btn = document.createElement('button')
+      btn.className = `btn ${closed ? 'danger' : 'ok'}`
+      btn.textContent = closed ? 'OPEN BREAKER' : 'CLOSE BREAKER'
+      btn.addEventListener('click', () => {
+        state.breakers[id] = !closed
+        onChange()
+        render()
+      })
+      c.appendChild(btn)
+      return
+    }
+
     if (sel.kind === 'gen') {
       const c = card('Generator G1', 'PV bus')
       rows = [
@@ -240,6 +272,16 @@ export function createPanel(
           },
         },
         { label: 'Surge impedance loading', bind: () => `${f(silOf(sel!.id), 0)} MW` },
+        {
+          label: 'Breakers',
+          bind: (_s, i) => {
+            const l = i.lines.find((x) => x.id === sel!.id)
+            if (!l) return '—'
+            const fa = l.brkFrom !== false ? 'closed' : 'OPEN'
+            const ta = l.brkTo !== false ? 'closed' : 'OPEN'
+            return `${fa} · ${ta}`
+          },
+        },
       ]
       kvList(c, rows)
       sliders(c, [
@@ -289,10 +331,15 @@ export function createPanel(
           warn: (s) => pctOf(s, sel!.id) > 90,
           alarm: (s) => pctOf(s, sel!.id) > 100,
         },
+        {
+          label: 'Breaker',
+          bind: (_s, i) =>
+            i.transformers.find((x) => x.id === sel!.id)?.brkClosed !== false ? 'closed' : 'OPEN',
+        },
       ]
       kvList(c, rows)
       const note = card('Note')
-      note.innerHTML += '<p class="hint">Tap raise/lower (LTC) and transformer isolation arrive in Part 4.</p>'
+      note.innerHTML += '<p class="hint">Click the breaker square on the diagram to open or close this unit. Tap raise/lower (LTC) arrives in Part 4.</p>'
       return
     }
 

@@ -2,7 +2,7 @@ import { Cx, cx, add, scale, div } from './complex'
 import { BusSpec, LineSpec, TransformerSpec } from './spec'
 import { zBaseOhms } from './perunit'
 
-/** A branch reduced to per-unit, kept for post-solve flow calculation. */
+/** A branch reduced to per-unit, kept for Ybus assembly and flow calculation. */
 export interface BranchPu {
   id: string
   kind: 'line' | 'xfmr'
@@ -23,13 +23,61 @@ export interface YbusModel {
   branches: BranchPu[]
 }
 
+/** Equivalent-pi model of a line (keeps charging and Ferranti rise on long lines). */
+export function lineToBranchPu(
+  ln: LineSpec,
+  fromKv: number,
+  toKv: number,
+  sBaseMva: number,
+): BranchPu {
+  const zb = zBaseOhms(fromKv, sBaseMva)
+  const z = cx((ln.rOhmPerMi * ln.lengthMi) / zb, (ln.xOhmPerMi * ln.lengthMi) / zb)
+  const bPu = ln.bSPerMi * ln.lengthMi * zb
+  return {
+    id: ln.id,
+    kind: 'line',
+    from: -1,
+    to: -1,
+    fromKv,
+    toKv,
+    ySer: div(cx(1, 0), z),
+    yShFrom: cx(0, bPu / 2),
+    yShTo: cx(0, bPu / 2),
+    ratingMva: ln.ratingMva,
+  }
+}
+
+/** Series-impedance transformer model (off-nominal taps arrive with the LTC). */
+export function xfmrToBranchPu(
+  xf: TransformerSpec,
+  fromKv: number,
+  toKv: number,
+  sBaseMva: number,
+): BranchPu {
+  const ang = Math.atan(xf.xOverR)
+  const zOwn = cx(xf.zPuOnOwn * Math.cos(ang), xf.zPuOnOwn * Math.sin(ang))
+  const zSys = scale(zOwn, sBaseMva / xf.mvaRating)
+  return {
+    id: xf.id,
+    kind: 'xfmr',
+    from: -1,
+    to: -1,
+    fromKv,
+    toKv,
+    ySer: div(cx(1, 0), zSys),
+    yShFrom: cx(0, 0),
+    yShTo: cx(0, 0),
+    ratingMva: xf.mvaRating,
+  }
+}
+
 const zeros = (n: number): Cx[][] =>
   Array.from({ length: n }, () => Array.from({ length: n }, () => cx(0, 0)))
 
 /**
- * Build the bus admittance matrix from in-service lines (equivalent-pi model,
- * so long lines keep their charging and Ferranti rise) and transformers
- * (series impedance; off-nominal taps arrive with the LTC in Part 4).
+ * Build the bus admittance matrix from the given branches. Callers pass only
+ * the branches they want modelled — islanding filters by breaker state
+ * upstream.
  */
 export function buildYbus(
   buses: BusSpec[],
@@ -49,57 +97,34 @@ export function buildYbus(
 
   const branches: BranchPu[] = []
 
+  const stamp = (branch: BranchPu): void => {
+    y[branch.from][branch.from] = add(y[branch.from][branch.from], add(branch.ySer, branch.yShFrom))
+    y[branch.to][branch.to] = add(y[branch.to][branch.to], add(branch.ySer, branch.yShTo))
+    y[branch.from][branch.to] = add(y[branch.from][branch.to], scale(branch.ySer, -1))
+    y[branch.to][branch.from] = add(y[branch.to][branch.from], scale(branch.ySer, -1))
+  }
+
   for (const ln of lines) {
-    if (ln.inService === false) continue
     const from = indexOf(ln.from, `line ${ln.id}`)
     const to = indexOf(ln.to, `line ${ln.id}`)
-    const zb = zBaseOhms(buses[from].baseKv, sBaseMva)
-    const z = cx((ln.rOhmPerMi * ln.lengthMi) / zb, (ln.xOhmPerMi * ln.lengthMi) / zb)
-    const bPu = ln.bSPerMi * ln.lengthMi * zb
-    const branch: BranchPu = {
-      id: ln.id,
-      kind: 'line',
-      from,
-      to,
-      fromKv: buses[from].baseKv,
-      toKv: buses[to].baseKv,
-      ySer: div(cx(1, 0), z),
-      yShFrom: cx(0, bPu / 2),
-      yShTo: cx(0, bPu / 2),
-      ratingMva: ln.ratingMva,
-    }
+    const branch = lineToBranchPu(ln, buses[from].baseKv, buses[to].baseKv, sBaseMva)
+    branch.from = from
+    branch.to = to
     branches.push(branch)
-    y[from][from] = add(y[from][from], add(branch.ySer, branch.yShFrom))
-    y[to][to] = add(y[to][to], add(branch.ySer, branch.yShTo))
-    y[from][to] = add(y[from][to], scale(branch.ySer, -1))
-    y[to][from] = add(y[to][from], scale(branch.ySer, -1))
+    stamp(branch)
   }
 
   for (const xf of transformers) {
-    if (xf.inService === false) continue
     const from = indexOf(xf.hv, `xfmr ${xf.id}`)
     const to = indexOf(xf.lv, `xfmr ${xf.id}`)
-    const ang = Math.atan(xf.xOverR)
-    const zOwn = cx(xf.zPuOnOwn * Math.cos(ang), xf.zPuOnOwn * Math.sin(ang))
-    const zSys = scale(zOwn, sBaseMva / xf.mvaRating)
-    const branch: BranchPu = {
-      id: xf.id,
-      kind: 'xfmr',
-      from,
-      to,
-      fromKv: buses[from].baseKv,
-      toKv: buses[to].baseKv,
-      ySer: div(cx(1, 0), zSys),
-      yShFrom: cx(0, 0),
-      yShTo: cx(0, 0),
-      ratingMva: xf.mvaRating,
-    }
+    const branch = xfmrToBranchPu(xf, buses[from].baseKv, buses[to].baseKv, sBaseMva)
+    branch.from = from
+    branch.to = to
     branches.push(branch)
-    y[from][from] = add(y[from][from], branch.ySer)
-    y[to][to] = add(y[to][to], branch.ySer)
-    y[from][to] = add(y[from][to], scale(branch.ySer, -1))
-    y[to][from] = add(y[to][from], scale(branch.ySer, -1))
+    stamp(branch)
   }
 
   return { n, y, branches }
 }
+
+export { zBaseOhms }

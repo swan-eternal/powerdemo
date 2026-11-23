@@ -181,6 +181,42 @@ html, body {
 
 .hint { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
 
+/* ---- Part 3: breakers, de-energized, alarms ---- */
+
+.brk.open { fill: var(--brk-open); stroke: #1c4a29; }
+
+#diagram .dead { opacity: 0.45; }
+#diagram .dead .t-val,
+#diagram .dead .t-name { fill: #55637a; }
+#diagram .dead .bar { fill: #4a5872; }
+#diagram .dead .ln { stroke: #4a5872; }
+#diagram .dead .load-arrow,
+#diagram .dead .load-head { stroke: #4a5872; fill: #4a5872; }
+
+.btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 8px 0;
+  border-radius: 6px;
+  border: 1px solid var(--card-edge);
+  background: #22304a;
+  color: var(--text-bright);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn:hover { filter: brightness(1.15); }
+.btn.danger { background: #4a1d1a; border-color: #7a2d26; color: #ffb3ae; }
+.btn.ok { background: #14351f; border-color: #265c36; color: #9ae6b4; }
+
+.freq-bad { color: var(--alarm); }
+
+.alarm-list { display: flex; flex-direction: column; gap: 4px; }
+.alarm-item { font-size: 12px; padding: 5px 8px; border-radius: 6px; line-height: 1.35; }
+.alarm-item.alarm { background: #3d1420; color: #ff9d94; }
+.alarm-item.info { background: #1c2740; color: #9fc1dc; }
+.alarm-item.ok { color: var(--ok); }
+
 @media (max-width: 900px) {
   #layout { grid-template-columns: 1fr; }
 }

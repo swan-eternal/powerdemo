@@ -51,6 +51,8 @@ export function makeBaseCase(): SolveInput {
         mwSet: 150,
         vSetPu: 1.02,
         mvaRating: 220,
+        droop: 0.05,
+        pMaxMw: 200,
         qMinMvar: -50,
         qMaxMvar: 90,
       },

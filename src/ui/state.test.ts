@@ -33,15 +33,32 @@ describe('control state', () => {
     c.ind = { mw: 60, pf: 0.95 }
     c.lines['L_TIE'] = 40
     c.feeders[0] = { n: 1, mw: 22, pf: 0.9 }
+    c.breakers['L_TIE:from'] = false
+    c.breakers['T_IND:brk'] = false
     const rebuilt = buildCase(base, c)
     expect(rebuilt.gens[0].mwSet).toBe(120)
     const ind = rebuilt.loads.find((l) => l.id === 'IND_MAIN')!
     expect(ind.mw).toBe(60)
     expect(ind.mvar).toBeCloseTo(mwToMvar(60, 0.95), 12)
-    expect(rebuilt.lines.find((l) => l.id === 'L_TIE')!.lengthMi).toBe(40)
+    const tie = rebuilt.lines.find((l) => l.id === 'L_TIE')!
+    expect(tie.lengthMi).toBe(40)
+    expect(tie.brkFrom).toBe(false)
+    expect(tie.brkTo).toBe(true)
+    expect(rebuilt.transformers.find((t) => t.id === 'T_IND')!.brkClosed).toBe(false)
     expect(rebuilt.loads.find((l) => l.id === 'RES_F1')!.mw).toBe(22)
     // other feeders untouched
     expect(rebuilt.loads.find((l) => l.id === 'RES_F2')!.mw).toBe(15)
+  })
+
+  it('breaker states from the UI de-energize the right islands', () => {
+    const base = makeBaseCase()
+    const c = initialControlState(base)
+    c.breakers['L_TIE:from'] = false
+    c.breakers['T_IND:brk'] = false
+    const snap = solvePowerFlow(buildCase(base, c))
+    expect(snap.buses.find((b) => b.id === 'GRID')!.energized).toBe(false)
+    expect(snap.buses.find((b) => b.id === 'IND_LV')!.energized).toBe(false)
+    expect(snap.buses.find((b) => b.id === 'RES_LV')!.energized).toBe(true)
   })
 
   it('solves a heavily-adjusted case with warm-started rebuilds', () => {
@@ -51,7 +68,7 @@ describe('control state', () => {
     c.ind = { mw: 120, pf: 0.8 }
     c.feeders.forEach((fd) => (fd.mw = 20))
     c.gen.mwSet = 180
-    snap = solvePowerFlow(buildCase(base, c), snap.state)
+    snap = solvePowerFlow(buildCase(base, c), { byBus: snap.state.byBus })
     expect(snap.converged).toBe(true)
     expect(Math.abs(snap.totals.balanceResidualMw)).toBeLessThan(1e-4)
   })

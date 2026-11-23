@@ -16,6 +16,8 @@ export interface ControlState {
   lines: Record<string, number> // line id -> length (mi)
   ind: { mw: number; pf: number }
   feeders: FeederControl[]
+  /** Breaker states by breaker id; true = closed. */
+  breakers: Record<string, boolean>
 }
 
 /** MVAR absorbed by a constant-power load at the given MW and power factor. */
@@ -28,10 +30,20 @@ export const pfOf = (mw: number, mvar: number): number =>
 
 const IND_ID = 'IND_MAIN'
 const feederId = (n: number): string => `RES_F${n}`
+export const lineBrkId = (lineId: string, end: 'from' | 'to'): string => `${lineId}:${end}`
+export const xfmrBrkId = (xfId: string): string => `${xfId}:brk`
 
 export function initialControlState(base: SolveInput): ControlState {
   const ind = base.loads.find((l) => l.id === IND_ID)!
   const f1 = base.loads.find((l) => l.id === feederId(1))!
+  const breakers: Record<string, boolean> = {}
+  for (const l of base.lines) {
+    breakers[lineBrkId(l.id, 'from')] = l.brkFrom !== false
+    breakers[lineBrkId(l.id, 'to')] = l.brkTo !== false
+  }
+  for (const t of base.transformers) {
+    breakers[xfmrBrkId(t.id)] = t.brkClosed !== false
+  }
   return {
     gen: {
       mwSet: base.gens[0].mwSet,
@@ -43,6 +55,7 @@ export function initialControlState(base: SolveInput): ControlState {
       const f = base.loads.find((l) => l.id === feederId(n)) ?? f1
       return { n, mw: f.mw, pf: pfOf(f.mw, f.mvar) }
     }),
+    breakers,
   }
 }
 
@@ -53,7 +66,16 @@ export function buildCase(base: SolveInput, c: ControlState): SolveInput {
     gens: base.gens.map((g) =>
       g.id === 'G1' ? { ...g, mwSet: c.gen.mwSet, vSetPu: c.gen.vSetPu } : g,
     ),
-    lines: base.lines.map((l) => ({ ...l, lengthMi: c.lines[l.id] ?? l.lengthMi })),
+    lines: base.lines.map((l) => ({
+      ...l,
+      lengthMi: c.lines[l.id] ?? l.lengthMi,
+      brkFrom: c.breakers[lineBrkId(l.id, 'from')] ?? true,
+      brkTo: c.breakers[lineBrkId(l.id, 'to')] ?? true,
+    })),
+    transformers: base.transformers.map((t) => ({
+      ...t,
+      brkClosed: c.breakers[xfmrBrkId(t.id)] ?? true,
+    })),
     loads: base.loads.map((l) => {
       if (l.id === IND_ID) {
         return { ...l, mw: c.ind.mw, mvar: mwToMvar(c.ind.mw, c.ind.pf) }

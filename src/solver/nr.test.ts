@@ -125,7 +125,7 @@ describe('Newton-Raphson solver', () => {
       transformers: [],
       loads: [{ id: 'LD', bus: 'L', mw: 80, mvar: 30 }],
       gens: [
-        { id: 'G1', bus: 'G', mwSet: 80, vSetPu: 1.03, mvaRating: 150, qMinMvar: -40, qMaxMvar: 60 },
+        { id: 'G1', bus: 'G', mwSet: 80, vSetPu: 1.03, mvaRating: 150, pMaxMw: 150, qMinMvar: -40, qMaxMvar: 60 },
       ],
     }
     const snap = solvePowerFlow(net)

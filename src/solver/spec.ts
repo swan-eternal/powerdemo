@@ -24,8 +24,10 @@ export interface LineSpec {
   /** Total line charging susceptance per mile (S). */
   bSPerMi: number
   ratingMva: number
-  /** Breaker state; false removes the branch from the model. */
-  inService?: boolean
+  /** Breaker at the from end; false = open. Default closed. */
+  brkFrom?: boolean
+  /** Breaker at the to end; false = open. Default closed. */
+  brkTo?: boolean
 }
 
 export interface TransformerSpec {
@@ -39,10 +41,11 @@ export interface TransformerSpec {
   xOverR: number
   /** Off-nominal tap ratio, 1 = nominal. LTC stepping arrives in Part 4. */
   tapPu?: number
-  inService?: boolean
+  /** Breaker on the unit; false = open. Default closed. */
+  brkClosed?: boolean
 }
 
-/** Constant-PQ load for Part 1; ZIP coefficients arrive in Part 4. */
+/** Constant-PQ load for now; ZIP coefficients arrive in Part 4. */
 export interface LoadSpec {
   id: string
   bus: string
@@ -56,6 +59,10 @@ export interface GenSpec {
   mwSet: number
   vSetPu: number
   mvaRating: number
+  /** Governor droop (pu frequency change per pu power change), used when islanded. */
+  droop?: number
+  /** Active power ceiling; exceeding it raises an underfrequency alarm. */
+  pMaxMw: number
   /** Reactive envelope; enforced from Part 4. */
   qMinMvar: number
   qMaxMvar: number
@@ -64,9 +71,13 @@ export interface GenSpec {
 export interface SolveInput {
   /** System MVA base for the internal per-unit model. */
   sBaseMva: number
-  /** Slack bus id for Part 1 (single island); per-island reference selection arrives in Part 3. */
+  /**
+   * Reference bus for the grid-tied island (the GRID equivalent). Islands
+   * without it use their generator as reference; islands without any source
+   * are de-energized.
+   */
   slackBusId: string
-  /** Slack voltage setpoint, pu. */
+  /** Grid-tied slack voltage setpoint, pu. */
   slackVpu?: number
   buses: BusSpec[]
   lines: LineSpec[]
