@@ -249,3 +249,9 @@ html, body {
 .capbank.on .cap-plate { stroke: var(--warn); }
 .capbank.on .cap-wire { stroke: var(--warn); }
 .capbank.dead { opacity: 0.35; }
+
+/* fault infeed: both terminals animate toward the tap */
+.flow.faultflow {
+  stroke: var(--alarm);
+  stroke-width: 2.6;
+}

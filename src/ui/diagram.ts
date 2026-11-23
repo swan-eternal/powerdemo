@@ -61,7 +61,7 @@ const BUS: Record<string, BusDraw> = {
   GSUB: { x: 185, y: 305, w: 96, name: 'Generation\nSubstation', nx: 128, ny: 280, anchor: 'end', v1y: 314, v2y: 330 },
   IND_HV: { x: 480, y: 205, w: 84, name: 'Industrial HV', nx: 430, ny: 168, anchor: 'end', v1y: 186, v2y: 202 },
   IND_LV: { x: 480, y: 105, w: 84, name: 'Industrial LV', nx: 428, ny: 88, anchor: 'end', v1y: 104, v2y: 120 },
-  RES_HV: { x: 770, y: 305, w: 84, name: 'Residential HV', nx: 720, ny: 230, anchor: 'end', v1y: 246, v2y: 262 },
+  RES_HV: { x: 770, y: 305, w: 84, name: 'Residential HV', nx: 820, ny: 288, anchor: 'start', v1y: 308, v2y: 324 },
   RES_LV: { x: 770, y: 425, w: 150, name: 'Residential LV', nx: 685, ny: 416, anchor: 'end', v1y: 432, v2y: 448 },
 }
 
@@ -79,7 +79,7 @@ interface LineDraw {
 const LINES: LineDraw[] = [
   { id: 'L_GSUB_IND', fromBus: 'GSUB', from: [185, 305], to: [480, 205], tx: 322, ty: 232 },
   { id: 'L_GSUB_RES', fromBus: 'GSUB', from: [185, 305], to: [770, 305], tx: 455, ty: 316 },
-  { id: 'L_IND_RES', fromBus: 'IND_HV', from: [480, 205], to: [770, 305], tx: 618, ty: 186 },
+  { id: 'L_IND_RES', fromBus: 'IND_HV', from: [480, 205], to: [770, 305], tx: 600, ty: 210 },
   { id: 'L_TIE', fromBus: 'GRID', from: [955, 145], to: [770, 305], tx: 850, ty: 195 },
 ]
 
@@ -140,6 +140,7 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
   const lineVal: Record<string, [SVGTextElement, SVGTextElement]> = {}
   const xfmrVal: Record<string, SVGTextElement> = {}
   const flowEls: Record<string, SVGPathElement> = {}
+  const faultFlow: Record<string, [SVGPathElement, SVGPathElement]> = {}
   const lnEls: Record<string, SVGPathElement> = {}
   const faultGfx: Record<string, { g: SVGGElement; txt: SVGTextElement }> = {}
   let genVal: [SVGTextElement, SVGTextElement]
@@ -171,6 +172,10 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     const d = `M ${l.from[0]} ${l.from[1]} L ${l.to[0]} ${l.to[1]}`
     lnEls[l.id] = e('path', { d, class: 'ln sketch' }, g)
     flowEls[l.id] = e('path', { d, class: 'flow off' }, g)
+    faultFlow[l.id] = [
+      e('path', { d: '', class: 'flow off faultflow' }, g),
+      e('path', { d: '', class: 'flow off faultflow' }, g),
+    ]
     // breakers at both ends (red closed / green open)
     for (const [t, end] of [
       [0.16, 'from'],
@@ -334,6 +339,9 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
         const br = brById.get(l.id)
         if (!br) continue
         const [t1, t2] = lineVal[l.id]
+        const [ffFrom, ffTo] = faultFlow[l.id]
+        ffFrom.setAttribute('class', 'flow off')
+        ffTo.setAttribute('class', 'flow off')
         // fault marker / faulted stroke
         {
           const gfx = faultGfx[l.id]
@@ -351,6 +359,17 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
             gfx.g.classList.toggle('dead', !br.fault.live)
             gfx.txt.textContent = br.fault.live ? `FAULT · ${f0(br.fault.faultAmps)} A` : 'FAULT · isolated'
             lnEl.setAttribute('class', br.fault.live ? 'ln sketch faulted' : 'ln sketch')
+            // both terminals feed the fault — animate each half toward the tap
+            const live = br.fault.live && br.energized
+            const flipped = !!sl && sl.from !== l.fromBus
+            const feed = (el: SVGPathElement, x: number, y: number, amps: number): void => {
+              if (!live || amps < 1) return
+              el.setAttribute('d', `M ${x} ${y} L ${fx.toFixed(1)} ${fy.toFixed(1)}`)
+              el.setAttribute('class', 'flow fwd faultflow')
+              el.style.setProperty('--dur', `${Math.min(1.6, Math.max(0.3, 2400 / amps)).toFixed(2)}s`)
+            }
+            feed(ffFrom, l.from[0], l.from[1], flipped ? br.ampsTo : br.ampsFrom)
+            feed(ffTo, l.to[0], l.to[1], flipped ? br.ampsFrom : br.ampsTo)
           }
         }
         if (!br.energized) {
@@ -366,7 +385,8 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
 
         const flow = flowEls[l.id]
         const mw = Math.abs(br.fromMw)
-        if (mw < 0.05) {
+        if (br.fault?.live || mw < 0.05) {
+          // halves carry the motion during a fault
           flow.setAttribute('class', 'flow off')
         } else {
           flow.setAttribute('class', `flow ${br.fromMw > 0 ? 'fwd' : 'rev'}`)
