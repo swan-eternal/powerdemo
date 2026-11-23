@@ -11,6 +11,8 @@ export interface BusSpec {
   label?: string
   /** Nominal line-to-line kV of the voltage level this bus belongs to. */
   baseKv: number
+  /** Shunt admittance to ground, pu on the system base (fault tap points). */
+  shuntPu?: { g: number; b: number }
 }
 
 export interface LineSpec {
@@ -68,6 +70,14 @@ export interface GenSpec {
   qMaxMvar: number
 }
 
+/** Fault path impedance, phase ohms. X/R fixed at 10 (mostly inductive). 0 = bolted. */
+export interface FaultSpec {
+  lineId: string
+  /** Distance along the line from the `from` bus, percent. */
+  atPct: number
+  zOhms: number
+}
+
 export interface SolveInput {
   /** System MVA base for the internal per-unit model. */
   sBaseMva: number
@@ -84,4 +94,6 @@ export interface SolveInput {
   transformers: TransformerSpec[]
   loads: LoadSpec[]
   gens: GenSpec[]
+  /** Applied line faults (steady-state shunt at a tap point). */
+  faults?: FaultSpec[]
 }

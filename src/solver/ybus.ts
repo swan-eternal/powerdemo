@@ -97,6 +97,12 @@ export function buildYbus(
 
   const branches: BranchPu[] = []
 
+  // Bus shunts (fault tap points) stamp into the diagonal.
+  for (let i = 0; i < buses.length; i++) {
+    const sh = buses[i].shuntPu
+    if (sh) y[i][i] = add(y[i][i], cx(sh.g, sh.b))
+  }
+
   const stamp = (branch: BranchPu): void => {
     y[branch.from][branch.from] = add(y[branch.from][branch.from], add(branch.ySer, branch.yShFrom))
     y[branch.to][branch.to] = add(y[branch.to][branch.to], add(branch.ySer, branch.yShTo))

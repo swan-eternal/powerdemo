@@ -5,9 +5,9 @@ full Newton-Raphson power flow solved in the browser on every control change.
 
 **Live:** https://swan-eternal.github.io/powerdemo/
 
-Status: **Part 3 — clickable breakers, islanding, droop frequency, alarms.**
-Fault application on lines is queued next, then reactive limits, LTC and ZIP
-loads in Part 4.
+Status: **Line faults — apply from any line faceplate at a chosen position and
+impedance; isolate with the breakers.** Reactive limits, LTC taps, ZIP loads
+and motor start arrive in Part 4.
 
 ## Commands
 

@@ -37,6 +37,7 @@ export function createPanel(
   let sel: Selection = null
   let rows: Row[] = []
   const rowEls: { dd: HTMLElement; row: Row }[] = []
+  const pending = { atPct: 50, zOhms: 10 }
 
   const silOf = (id: string): number => {
     const l = base.lines.find((x) => x.id === id)
@@ -295,6 +296,120 @@ export function createPanel(
           fmt: (v) => `${v} mi`,
         },
       ])
+
+      // --- Fault control ---
+      const faultCard = card('Fault', state.fault?.lineId === sel.id ? 'APPLIED' : 'none')
+      if (state.fault?.lineId === sel.id) {
+        const flt = state.fault
+        const specLine = base.lines.find((x) => x.id === sel!.id)
+        const fromLabel =
+          base.buses.find((b) => b.id === specLine?.from)?.label ?? 'from'
+        const frows: Row[] = [
+          { label: 'Position', bind: () => `${f(flt.atPct, 0)}% from ${fromLabel} end` },
+          {
+            label: 'Impedance',
+            bind: () => (flt.zOhms === 0 ? 'bolted' : `${f(flt.zOhms, 1)} Ω · X/R 10`),
+          },
+          {
+            label: 'Tap voltage',
+            bind: (s) => {
+              const fr = s.branches.find((b) => b.id === sel!.id)?.fault
+              return fr ? (fr.live ? `${fr.tapVPu.toFixed(3)} pu` : 'isolated') : '—'
+            },
+            alarm: (s) => !!s.branches.find((b) => b.id === sel!.id)?.fault?.live,
+          },
+          {
+            label: 'Fault current',
+            bind: (s) => {
+              const fr = s.branches.find((b) => b.id === sel!.id)?.fault
+              return fr?.live ? `${f(fr.faultAmps, 0)} A` : '0 A'
+            },
+            alarm: (s) => !!s.branches.find((b) => b.id === sel!.id)?.fault?.live,
+          },
+          {
+            label: 'Fault power',
+            bind: (s) => {
+              const fr = s.branches.find((b) => b.id === sel!.id)?.fault
+              return fr?.live ? `${f(fr.faultMw, 1)} MW · ${f(fr.faultMvar, 0)} MVAR` : '—'
+            },
+          },
+        ]
+        kvList(faultCard, frows)
+        sliders(faultCard, [
+          {
+            label: 'Position',
+            min: 5,
+            max: 95,
+            step: 1,
+            get: () => flt.atPct,
+            set: (v) => (flt.atPct = v),
+            fmt: (v) => `${f(v, 0)}%`,
+          },
+          {
+            label: 'Fault impedance',
+            min: 0,
+            max: 50,
+            step: 0.5,
+            get: () => flt.zOhms,
+            set: (v) => (flt.zOhms = v),
+            fmt: (v) => (v === 0 ? 'bolted' : `${f(v, 1)} Ω`),
+          },
+        ])
+        const clearBtn = document.createElement('button')
+        clearBtn.className = 'btn ok'
+        clearBtn.textContent = 'CLEAR FAULT'
+        clearBtn.addEventListener('click', () => {
+          state.fault = null
+          onChange()
+          render()
+        })
+        faultCard.appendChild(clearBtn)
+        const hintEl = document.createElement('p')
+        hintEl.className = 'hint'
+        hintEl.textContent =
+          'Opening this line\u2019s breakers isolates the fault; closing them feeds it again. Clear removes it entirely.'
+        faultCard.appendChild(hintEl)
+      } else if (state.fault) {
+        const other = document.createElement('p')
+        other.className = 'hint'
+        other.textContent = `A fault is applied on ${state.fault.lineId} — clear it there first.`
+        faultCard.appendChild(other)
+      } else {
+        sliders(faultCard, [
+          {
+            label: 'Position',
+            min: 5,
+            max: 95,
+            step: 1,
+            get: () => pending.atPct,
+            set: (v) => (pending.atPct = v),
+            fmt: (v) => `${f(v, 0)}%`,
+          },
+          {
+            label: 'Fault impedance',
+            min: 0,
+            max: 50,
+            step: 0.5,
+            get: () => pending.zOhms,
+            set: (v) => (pending.zOhms = v),
+            fmt: (v) => (v === 0 ? 'bolted' : `${f(v, 1)} Ω`),
+          },
+        ])
+        const applyBtn = document.createElement('button')
+        applyBtn.className = 'btn danger'
+        applyBtn.textContent = 'APPLY FAULT'
+        applyBtn.addEventListener('click', () => {
+          state.fault = { lineId: sel!.id, atPct: pending.atPct, zOhms: pending.zOhms }
+          onChange()
+          render()
+        })
+        faultCard.appendChild(applyBtn)
+        const hintEl = document.createElement('p')
+        hintEl.className = 'hint'
+        hintEl.textContent =
+          'Steady-state shunt at the tap point (X/R 10). Fault-study convention: loads ride at constant impedance while the fault is on, so served load sags as voltage drops. Bolted presses the tap toward zero volts — watch fault current and loadings climb, then isolate with the line breakers.'
+        faultCard.appendChild(hintEl)
+      }
       return
     }
 

@@ -217,6 +217,23 @@ html, body {
 .alarm-item.info { background: #1c2740; color: #9fc1dc; }
 .alarm-item.ok { color: var(--ok); }
 
+/* ---- line faults ---- */
+.ln.faulted { stroke: var(--alarm); }
+.fault-gfx { pointer-events: none; }
+.fault-gfx.dead { opacity: 0.4; }
+.fault-glyph {
+  stroke: var(--alarm);
+  fill: none;
+  stroke-width: 1.6;
+  animation: faultpulse 1.1s ease-in-out infinite;
+}
+.fault-ground { stroke: var(--alarm); fill: none; stroke-width: 1.4; }
+.fault-gfx.dead .fault-glyph { animation: none; stroke: #55637a; }
+.fault-gfx.dead .fault-ground { stroke: #55637a; }
+.t-fault { fill: var(--alarm); font-size: 10.5px; font-weight: 600; }
+.fault-gfx.dead .t-fault { fill: #55637a; font-weight: 400; }
+@keyframes faultpulse { 50% { opacity: 0.35; } }
+
 @media (max-width: 900px) {
   #layout { grid-template-columns: 1fr; }
 }

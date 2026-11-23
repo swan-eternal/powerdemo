@@ -145,8 +145,20 @@ export function newtonRaphson(
 
     const dx = solveDense(J, mism)
     if (dx.some(Number.isNaN)) break
-    angIdx.forEach((b, k) => { th[b] += dx[k] })
-    voltIdx.forEach((b, k) => { V[b] += dx[nAng + k] })
+    // Damped update: cap the angle step and the relative voltage step so a
+    // single iteration cannot throw a bus magnitude through zero — stiff
+    // fault shunts make raw Newton steps violent. Damping only engages on
+    // large steps; ordinary quadratic convergence is untouched.
+    let damp = 1
+    for (let k = 0; k < nAng; k++) {
+      damp = Math.min(damp, 0.5 / Math.max(Math.abs(dx[k]), 1e-12))
+    }
+    for (let k = 0; k < voltIdx.length; k++) {
+      const allowed = 0.25 * Math.max(V[voltIdx[k]], 0.05)
+      damp = Math.min(damp, allowed / Math.max(Math.abs(dx[nAng + k]), 1e-12))
+    }
+    angIdx.forEach((b, k) => { th[b] += damp * dx[k] })
+    voltIdx.forEach((b, k) => { V[b] += damp * dx[nAng + k] })
     iterations++
   }
 

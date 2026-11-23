@@ -18,6 +18,8 @@ export interface ControlState {
   feeders: FeederControl[]
   /** Breaker states by breaker id; true = closed. */
   breakers: Record<string, boolean>
+  /** Single applied line fault; null = none. */
+  fault: { lineId: string; atPct: number; zOhms: number } | null
 }
 
 /** MVAR absorbed by a constant-power load at the given MW and power factor. */
@@ -56,6 +58,7 @@ export function initialControlState(base: SolveInput): ControlState {
       return { n, mw: f.mw, pf: pfOf(f.mw, f.mvar) }
     }),
     breakers,
+    fault: null,
   }
 }
 
@@ -63,6 +66,7 @@ export function initialControlState(base: SolveInput): ControlState {
 export function buildCase(base: SolveInput, c: ControlState): SolveInput {
   return {
     ...base,
+    faults: c.fault ? [{ ...c.fault }] : [],
     gens: base.gens.map((g) =>
       g.id === 'G1' ? { ...g, mwSet: c.gen.mwSet, vSetPu: c.gen.vSetPu } : g,
     ),

@@ -48,6 +48,12 @@ describe('control state', () => {
     expect(rebuilt.loads.find((l) => l.id === 'RES_F1')!.mw).toBe(22)
     // other feeders untouched
     expect(rebuilt.loads.find((l) => l.id === 'RES_F2')!.mw).toBe(15)
+    // fault plumbing
+    c.fault = { lineId: 'L_TIE', atPct: 40, zOhms: 5 }
+    const faulted = buildCase(base, c)
+    expect(faulted.faults).toEqual([{ lineId: 'L_TIE', atPct: 40, zOhms: 5 }])
+    c.fault = null
+    expect(buildCase(base, c).faults).toEqual([])
   })
 
   it('breaker states from the UI de-energize the right islands', () => {

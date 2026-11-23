@@ -68,16 +68,18 @@ interface LineDraw {
   id: string
   from: [number, number]
   to: [number, number]
+  /** spec `from` bus of this line, to orient the fault marker */
+  fromBus: string
   /** flow text block */
   tx: number
   ty: number
 }
 
 const LINES: LineDraw[] = [
-  { id: 'L_GSUB_IND', from: [185, 305], to: [480, 205], tx: 322, ty: 232 },
-  { id: 'L_GSUB_RES', from: [185, 305], to: [770, 255], tx: 455, ty: 316 },
-  { id: 'L_IND_RES', from: [480, 205], to: [770, 255], tx: 618, ty: 172 },
-  { id: 'L_TIE', from: [955, 145], to: [770, 255], tx: 840, ty: 172 },
+  { id: 'L_GSUB_IND', fromBus: 'GSUB', from: [185, 305], to: [480, 205], tx: 322, ty: 232 },
+  { id: 'L_GSUB_RES', fromBus: 'GSUB', from: [185, 305], to: [770, 255], tx: 455, ty: 316 },
+  { id: 'L_IND_RES', fromBus: 'IND_HV', from: [480, 205], to: [770, 255], tx: 618, ty: 172 },
+  { id: 'L_TIE', fromBus: 'GRID', from: [955, 145], to: [770, 255], tx: 840, ty: 172 },
 ]
 
 interface XfmrDraw {
@@ -137,6 +139,8 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
   const lineVal: Record<string, [SVGTextElement, SVGTextElement]> = {}
   const xfmrVal: Record<string, SVGTextElement> = {}
   const flowEls: Record<string, SVGPathElement> = {}
+  const lnEls: Record<string, SVGPathElement> = {}
+  const faultGfx: Record<string, { g: SVGGElement; txt: SVGTextElement }> = {}
   let genVal: [SVGTextElement, SVGTextElement]
   let indVal: [SVGTextElement, SVGTextElement]
   const feederVal: Record<string, [SVGTextElement, SVGTextElement]> = {}
@@ -164,7 +168,7 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     const g = e('g', { class: 'live' })
     host.appendChild(g)
     const d = `M ${l.from[0]} ${l.from[1]} L ${l.to[0]} ${l.to[1]}`
-    e('path', { d, class: 'ln sketch' }, g)
+    lnEls[l.id] = e('path', { d, class: 'ln sketch' }, g)
     flowEls[l.id] = e('path', { d, class: 'flow off' }, g)
     // breakers at both ends (red closed / green open)
     for (const [t, end] of [
@@ -181,6 +185,12 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
       text(g, l.tx, l.ty, 't-val'),
       text(g, l.tx, l.ty + 14, 't-sub'),
     ]
+    // fault marker (hidden until a fault is applied on this line)
+    const fg = e('g', { class: 'fault-gfx', display: 'none' })
+    host.appendChild(fg)
+    e('path', { d: 'M 0 2 l 0 6 l -4 4 l 8 4 l -4 4 l 0 5', class: 'fault-glyph' }, fg)
+    e('path', { d: 'M -6 25 h 12 M -3.5 28 h 7 M -1 31 h 2', class: 'fault-ground' }, fg)
+    faultGfx[l.id] = { g: fg, txt: text(fg, 0, 45, 't-fault', 'middle', '') }
     e('path', { d, class: 'hit' }, g)
     clickable(g, { kind: 'line', id: l.id })
   }
@@ -307,6 +317,25 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
         const br = brById.get(l.id)
         if (!br) continue
         const [t1, t2] = lineVal[l.id]
+        // fault marker / faulted stroke
+        {
+          const gfx = faultGfx[l.id]
+          const lnEl = lnEls[l.id]
+          if (!br.fault) {
+            gfx.g.setAttribute('display', 'none')
+            lnEl.setAttribute('class', 'ln sketch')
+          } else {
+            gfx.g.removeAttribute('display')
+            const sl = input.lines.find((x) => x.id === l.id)
+            const pct = sl && sl.from !== l.fromBus ? 100 - br.fault.atPct : br.fault.atPct
+            const fx = l.from[0] + (pct / 100) * (l.to[0] - l.from[0])
+            const fy = l.from[1] + (pct / 100) * (l.to[1] - l.from[1])
+            gfx.g.setAttribute('transform', `translate(${fx.toFixed(1)} ${fy.toFixed(1)})`)
+            gfx.g.classList.toggle('dead', !br.fault.live)
+            gfx.txt.textContent = br.fault.live ? `FAULT · ${f0(br.fault.faultAmps)} A` : 'FAULT · isolated'
+            lnEl.setAttribute('class', br.fault.live ? 'ln sketch faulted' : 'ln sketch')
+          }
+        }
         if (!br.energized) {
           t1.textContent = breakerOpenOn(l.id) ? 'OPEN' : 'DE-ENERGIZED'
           t2.textContent = ''

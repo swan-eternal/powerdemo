@@ -1,9 +1,10 @@
 import { Cx, add, sub, mul, scale, conj, expj, abs } from './complex'
 import { SolveInput } from './spec'
 import { buildYbus, BranchPu } from './ybus'
-import { newtonRaphson, injections, Roles } from './nr'
+import { newtonRaphson, injections, Roles, NrResult } from './nr'
 import { iBaseAmps } from './perunit'
 import { findIslands } from './islands'
+import { expandFaults } from './fault'
 
 export const F_BASE_HZ = 60
 
@@ -15,6 +16,7 @@ export type AlarmKind =
   | 'overfreq'
   | 'collapse'
   | 'dead-island'
+  | 'fault'
 
 export interface Alarm {
   kind: AlarmKind
@@ -52,6 +54,19 @@ export interface BranchResult {
   ampsFrom: number
   ampsTo: number
   loadingPct: number
+  /** Present when a fault is applied on this line. */
+  fault?: FaultResult
+}
+
+export interface FaultResult {
+  atPct: number
+  zOhms: number
+  /** True when the fault point is energized. */
+  live: boolean
+  tapVPu: number
+  faultAmps: number
+  faultMw: number
+  faultMvar: number
 }
 
 export interface GenResult {
@@ -141,10 +156,11 @@ export function solvePowerFlow(input: SolveInput, init?: SolveInit): Snapshot {
 
 function solve(input: SolveInput, init?: SolveInit): Snapshot {
   const { sBaseMva } = input
-  const buses = input.buses
+  const { input: net, taps, tapSet, loadShunts } = expandFaults(input)
+  const buses = net.buses
   const n = buses.length
   const idx = new Map(buses.map((b, i) => [b.id, i]))
-  const islands = findIslands(input)
+  const islands = findIslands(net)
 
   const alarms: Alarm[] = []
   const vBy = new Array<number>(n).fill(0)
@@ -159,29 +175,33 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
   let frequencyHz = F_BASE_HZ
 
   const loadAt = (busId: string): { mw: number; mvar: number } =>
-    input.loads.reduce(
+    net.loads.reduce(
       (s, l) => (l.bus === busId ? { mw: s.mw + l.mw, mvar: s.mvar + l.mvar } : s),
       { mw: 0, mvar: 0 },
     )
 
   for (const island of islands) {
     if (island.reference === null) {
-      alarms.push({
-        kind: 'dead-island',
-        severity: 'info',
-        where: island.buses[0],
-        detail: `${island.buses.length} bus${island.buses.length > 1 ? 'es' : ''} de-energized`,
-      })
+      const real = island.buses.filter((bid) => !tapSet.has(bid))
+      // A tap-only island is just the fault point on an isolated line.
+      if (real.length > 0) {
+        alarms.push({
+          kind: 'dead-island',
+          severity: 'info',
+          where: real[0],
+          detail: `${real.length} bus${real.length > 1 ? 'es' : ''} de-energized`,
+        })
+      }
       continue
     }
 
     // Live island: assemble and solve it on its own.
     const set = new Set(island.buses)
     const iBuses = buses.filter((b) => set.has(b.id))
-    const iLines = input.lines.filter((l) => set.has(l.from) && set.has(l.to) && lineConducts(l))
-    const iXfmrs = input.transformers.filter((t) => set.has(t.hv) && set.has(t.lv) && xfmrConducts(t))
-    const iLoads = input.loads.filter((l) => set.has(l.bus))
-    const iGens = input.gens.filter((g) => set.has(g.bus))
+    const iLines = net.lines.filter((l) => set.has(l.from) && set.has(l.to) && lineConducts(l))
+    const iXfmrs = net.transformers.filter((t) => set.has(t.hv) && set.has(t.lv) && xfmrConducts(t))
+    const iLoads = net.loads.filter((l) => set.has(l.bus))
+    const iGens = net.gens.filter((g) => set.has(g.bus))
 
     const m = iBuses.length
     const subIdx = new Map(iBuses.map((b, i) => [b.id, i]))
@@ -208,7 +228,7 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
     })
     const refGen = island.genRef ? iGens.find((g) => subIdx.get(g.bus) === slack) : undefined
     const applySetpoints = ({ v0, th0 }: { v0: number[]; th0: number[] }): void => {
-      v0[slack] = refGen ? refGen.vSetPu : input.slackVpu ?? 1
+      v0[slack] = refGen ? refGen.vSetPu : net.slackVpu ?? 1
       th0[slack] = 0
       for (const g of iGens) {
         const b = subIdx.get(g.bus)!
@@ -216,16 +236,63 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
       }
     }
 
-    const { y } = buildYbus(iBuses, iLines, iXfmrs, sBaseMva)
     const roles: Roles = { slack, pv, pq }
+
+    // Continuation helper: rebuild Ybus with fault tap shunts scaled by λ.
+    const buildScaled = (lam: number): Cx[][] =>
+      buildYbus(
+        lam === 1
+          ? iBuses
+          : iBuses.map((b) =>
+              b.shuntPu ? { ...b, shuntPu: { g: b.shuntPu.g * lam, b: b.shuntPu.b * lam } } : b,
+            ),
+        iLines,
+        iXfmrs,
+        sBaseMva,
+      ).y
+
+    // Newton never throws out of here: a singular Jacobian mid-solve counts
+    // as a failed attempt (fell through to flat/ramp retries), not an error.
+    const trySolve = (y: Cx[][], v0: number[], th0: number[]): NrResult => {
+      try {
+        return newtonRaphson(y, pSp, qSp, roles, v0, th0)
+      } catch {
+        return { converged: false, iterations: 0, V: [...v0], th: [...th0], maxMismatch: Infinity }
+      }
+    }
 
     let start = warm(false)
     applySetpoints(start)
-    let nr = newtonRaphson(y, pSp, qSp, roles, start.v0, start.th0)
+    let nr = trySolve(buildScaled(1), start.v0, start.th0)
+    if (nr.converged && loadShunts.length === 0) {
+      // Low-voltage-branch guard: a warm start from a depressed state (e.g.
+      // a just-cleared fault) can converge onto the collapsed root of the
+      // constant-power equations. If the flat solve finds the operable root,
+      // prefer it.
+      const minV = Math.min(...roles.pq.map((i) => nr.V[i]))
+      if (minV < 0.8) {
+        const flat0 = warm(true)
+        applySetpoints(flat0)
+        const flat = trySolve(buildScaled(1), flat0.v0, flat0.th0)
+        if (flat.converged && Math.min(...roles.pq.map((i) => flat.V[i])) > 0.8) nr = flat
+      }
+    }
     if (!nr.converged) {
       start = warm(true)
       applySetpoints(start)
-      nr = newtonRaphson(y, pSp, qSp, roles, start.v0, start.th0)
+      nr = trySolve(buildScaled(1), start.v0, start.th0)
+    }
+    if (!nr.converged && iBuses.some((b) => b.shuntPu)) {
+      // A low-impedance fault shunt makes one Newton step from flat start
+      // violent enough to diverge. Ramp the fault admittance up in ×2 stages,
+      // warm-starting each stage, so the tap voltage walks down instead.
+      start = warm(true)
+      for (const lam of [0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256, 0.512, 1]) {
+        applySetpoints(start)
+        nr = trySolve(buildScaled(lam), start.v0, start.th0)
+        if (!nr.converged) break
+        start = { v0: [...nr.V], th0: [...nr.th] }
+      }
     }
 
     for (const id of island.buses) {
@@ -255,7 +322,7 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
     }
 
     iterations = Math.max(iterations, nr.iterations)
-    const { p, q } = injections(y, nr.V, nr.th)
+    const { p, q } = injections(buildScaled(1), nr.V, nr.th)
     for (const id of island.buses) {
       const gi = idx.get(id)!
       const si = subIdx.get(id)!
@@ -286,28 +353,73 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
   }
 
   // --- Bus results ---
-  const busResults: BusResult[] = buses.map((b, i) => ({
-    id: b.id,
-    label: b.label,
-    baseKv: b.baseKv,
-    energized: live[i],
-    vmagPu: live[i] ? vBy[i] : 0,
-    kv: live[i] ? vBy[i] * b.baseKv : 0,
-    thetaRad: live[i] ? thBy[i] : 0,
-    thetaDeg: live[i] ? (thBy[i] * 180) / Math.PI : 0,
-    pMw: live[i] ? pBy[i] * sBaseMva : 0,
-    qMvar: live[i] ? qBy[i] * sBaseMva : 0,
-  }))
+  const busResults: BusResult[] = buses
+    .map((b, i) => ({
+      id: b.id,
+      label: b.label,
+      baseKv: b.baseKv,
+      energized: live[i],
+      vmagPu: live[i] ? vBy[i] : 0,
+      kv: live[i] ? vBy[i] * b.baseKv : 0,
+      thetaRad: live[i] ? thBy[i] : 0,
+      thetaDeg: live[i] ? (thBy[i] * 180) / Math.PI : 0,
+      pMw: live[i] ? pBy[i] * sBaseMva : 0,
+      qMvar: live[i] ? qBy[i] * sBaseMva : 0,
+    }))
+    .filter((b) => !tapSet.has(b.id))
   const busById = new Map(busResults.map((b) => [b.id, b]))
 
   // --- Branch flows (conducting branches only; others carry nothing) ---
-  const condLines = input.lines.filter(lineConducts)
-  const condXfmrs = input.transformers.filter(xfmrConducts)
+  // Faulted lines are solved as two segments around a tap bus; their results
+  // merge back into one physical line with fault readouts attached.
+  const condLines = net.lines.filter(lineConducts)
+  const condXfmrs = net.transformers.filter(xfmrConducts)
   const { branches } = buildYbus(buses, condLines, condXfmrs, sBaseMva)
 
-  const branchResults: BranchResult[] = input.lines.map((l) => {
-    const br = branches.find((b) => b.id === l.id)
-    return br && busEnergized(br) ? flowResult(br) : deadBranch(l.id, 'line', l.from, l.to)
+  const segResult = (id: string): BranchResult | undefined => {
+    const br = branches.find((b) => b.id === id)
+    return br && busEnergized(br) ? flowResult(br) : undefined
+  }
+
+  const branchResults: BranchResult[] = input.lines.map((l): BranchResult => {
+    const tap = taps.find((t) => t.lineId === l.id)
+    if (!tap) {
+      const br = branches.find((b) => b.id === l.id)
+      return br && busEnergized(br) ? flowResult(br) : deadBranch(l.id, 'line', l.from, l.to)
+    }
+    const ti = idx.get(tap.busId)!
+    const tapLive = live[ti]
+    const v2 = vBy[ti] * vBy[ti]
+    const fr: FaultResult = {
+      atPct: tap.atPct,
+      zOhms: tap.zOhms,
+      live: tapLive,
+      tapVPu: tapLive ? vBy[ti] : 0,
+      faultAmps: tapLive
+        ? vBy[ti] * Math.hypot(tap.gPu, tap.bPu) * iBaseAmps(buses[ti].baseKv, sBaseMva)
+        : 0,
+      faultMw: tapLive ? v2 * tap.gPu * sBaseMva : 0,
+      faultMvar: tapLive ? -v2 * tap.bPu * sBaseMva : 0,
+    }
+    const a = segResult(tap.segA)
+    const b = segResult(tap.segB)
+    if (!a && !b) return { ...deadBranch(l.id, 'line', l.from, l.to), fault: fr }
+    return {
+      id: l.id,
+      kind: 'line',
+      from: l.from,
+      to: l.to,
+      energized: true,
+      fromMw: a?.fromMw ?? 0,
+      fromMvar: a?.fromMvar ?? 0,
+      toMw: b?.toMw ?? 0,
+      toMvar: b?.toMvar ?? 0,
+      lossMw: (a?.lossMw ?? 0) + (b?.lossMw ?? 0) + fr.faultMw,
+      ampsFrom: a?.ampsFrom ?? 0,
+      ampsTo: b?.ampsTo ?? 0,
+      loadingPct: Math.max(a?.loadingPct ?? 0, b?.loadingPct ?? 0),
+      fault: fr,
+    }
   }).concat(
     input.transformers.map((t) => {
       const br = branches.find((b) => b.id === t.id)
@@ -364,7 +476,7 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
   }
 
   // --- Generator results ---
-  const gens: GenResult[] = input.gens.map((g) => {
+  const gens: GenResult[] = net.gens.map((g) => {
     const b = idx.get(g.bus)!
     const ld = loadAt(g.bus)
     const isRef = live[b] && islands.some((i) => i.genRef && i.reference === g.bus)
@@ -392,6 +504,16 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
       alarms.push({ kind: 'overload', severity: 'alarm', where: br.id, detail: `${br.loadingPct.toFixed(0)}%` })
     }
   }
+  for (const br of branchResults) {
+    if (br.fault?.live) {
+      alarms.push({
+        kind: 'fault',
+        severity: 'alarm',
+        where: br.id,
+        detail: `${br.fault.faultAmps.toFixed(0)} A at ${br.fault.atPct}% · V ${br.fault.tapVPu.toFixed(3)} pu`,
+      })
+    }
+  }
 
   // --- Totals over the served system ---
   // The live slack bus is a source too (the grid equivalent): count its
@@ -403,8 +525,24 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
     slackLive && !slackHasGen ? pBy[slackI] * sBaseMva + loadAt(input.slackBusId).mw : 0
   const slackSrcMvar =
     slackLive && !slackHasGen ? qBy[slackI] * sBaseMva + loadAt(input.slackBusId).mvar : 0
-  const loadMw = input.loads.filter((l) => busById.get(l.bus)?.energized).reduce((s, l) => s + l.mw, 0)
-  const loadMvar = input.loads.filter((l) => busById.get(l.bus)?.energized).reduce((s, l) => s + l.mvar, 0)
+  // Served load: constant-power loads report their schedule; during a fault
+  // study loads ride at constant impedance and report V²·Y actuals.
+  let loadMw = 0
+  let loadMvar = 0
+  if (loadShunts.length > 0) {
+    for (const sh of loadShunts) {
+      if (!busById.get(sh.bus)?.energized) continue
+      const v2 = vBy[idx.get(sh.bus)!] * vBy[idx.get(sh.bus)!]
+      loadMw += v2 * sh.gPu * sBaseMva
+      loadMvar += -v2 * sh.bPu * sBaseMva
+    }
+  } else {
+    for (const l of net.loads) {
+      if (!busById.get(l.bus)?.energized) continue
+      loadMw += l.mw
+      loadMvar += l.mvar
+    }
+  }
   const genMw = gens.reduce((s, g) => s + g.mw, 0) + slackSrcMw
   const genMvar = gens.reduce((s, g) => s + g.mvar, 0) + slackSrcMvar
   const lossMw = branchResults.reduce((s, br) => s + br.lossMw, 0)
