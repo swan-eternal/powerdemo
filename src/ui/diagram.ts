@@ -60,8 +60,8 @@ const BUS: Record<string, BusDraw> = {
   GSUB: { x: 185, y: 305, w: 96, name: 'Generation\nSubstation', nx: 128, ny: 280, anchor: 'end', v1y: 314, v2y: 330 },
   IND_HV: { x: 480, y: 205, w: 84, name: 'Industrial HV', nx: 430, ny: 168, anchor: 'end', v1y: 186, v2y: 202 },
   IND_LV: { x: 480, y: 105, w: 84, name: 'Industrial LV', nx: 428, ny: 88, anchor: 'end', v1y: 104, v2y: 120 },
-  RES_HV: { x: 770, y: 255, w: 84, name: 'Residential HV', nx: 720, ny: 192, anchor: 'end', v1y: 208, v2y: 224 },
-  RES_LV: { x: 770, y: 395, w: 150, name: 'Residential LV', nx: 685, ny: 386, anchor: 'end', v1y: 402, v2y: 418 },
+  RES_HV: { x: 770, y: 305, w: 84, name: 'Residential HV', nx: 720, ny: 230, anchor: 'end', v1y: 246, v2y: 262 },
+  RES_LV: { x: 770, y: 425, w: 150, name: 'Residential LV', nx: 685, ny: 416, anchor: 'end', v1y: 432, v2y: 448 },
 }
 
 interface LineDraw {
@@ -77,9 +77,9 @@ interface LineDraw {
 
 const LINES: LineDraw[] = [
   { id: 'L_GSUB_IND', fromBus: 'GSUB', from: [185, 305], to: [480, 205], tx: 322, ty: 232 },
-  { id: 'L_GSUB_RES', fromBus: 'GSUB', from: [185, 305], to: [770, 255], tx: 455, ty: 316 },
-  { id: 'L_IND_RES', fromBus: 'IND_HV', from: [480, 205], to: [770, 255], tx: 618, ty: 172 },
-  { id: 'L_TIE', fromBus: 'GRID', from: [955, 145], to: [770, 255], tx: 840, ty: 172 },
+  { id: 'L_GSUB_RES', fromBus: 'GSUB', from: [185, 305], to: [770, 305], tx: 455, ty: 316 },
+  { id: 'L_IND_RES', fromBus: 'IND_HV', from: [480, 205], to: [770, 305], tx: 618, ty: 186 },
+  { id: 'L_TIE', fromBus: 'GRID', from: [955, 145], to: [770, 305], tx: 850, ty: 195 },
 ]
 
 interface XfmrDraw {
@@ -97,7 +97,7 @@ const XFMRS: XfmrDraw[] = [
   { id: 'T_SU1', x: 167, yTop: 311, yBot: 456, symY: 392, brkY: 437 },
   { id: 'T_SU2', x: 203, yTop: 311, yBot: 456, symY: 392, brkY: 437 },
   { id: 'T_IND', x: 480, yTop: 111, yBot: 199, symY: 155, brkY: 182, label: 'IND', lx: 502 },
-  { id: 'T_RES', x: 770, yTop: 261, yBot: 389, symY: 317, brkY: 284, label: 'LTC', lx: 792 },
+  { id: 'T_RES', x: 770, yTop: 311, yBot: 419, symY: 367, brkY: 334, label: 'LTC', lx: 792 },
 ]
 
 const GEN = { x: 185, y: 480, r: 24 }
@@ -109,8 +109,8 @@ const FEEDERS = [
   { n: 3, x: 800 },
   { n: 4, x: 840 },
 ]
-const FEEDER_Y1 = 401
-const FEEDER_Y2 = 442
+const FEEDER_Y1 = 431
+const FEEDER_Y2 = 472
 
 const f1 = (x: number, d = 1): string => x.toFixed(d)
 const f0 = (x: number): string => x.toFixed(0)
