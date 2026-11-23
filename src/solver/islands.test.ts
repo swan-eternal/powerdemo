@@ -3,6 +3,15 @@ import { makeBaseCase } from '../network/baseCase'
 import { solvePowerFlow } from './solve'
 import { SolveInput } from './spec'
 
+// Islanding behaviour is tested against classic constant-power loads; ZIP
+// voltage dependence (and its interplay with caps/LTC) has its own suite in
+// part4.test.ts.
+const flatLoads = (): SolveInput => {
+  const b = makeBaseCase()
+  b.loads = b.loads.map((l) => ({ ...l, zip: undefined }))
+  return b
+}
+
 const openLine = (input: SolveInput, id: string): SolveInput => ({
   ...input,
   lines: input.lines.map((l) => (l.id === id ? { ...l, brkFrom: false, brkTo: false } : l)),
@@ -15,7 +24,7 @@ const openXfmr = (input: SolveInput, id: string): SolveInput => ({
 
 describe('islanding and breakers', () => {
   it('all closed: grid-tied at 60 Hz, everything energized (regression)', () => {
-    const snap = solvePowerFlow(makeBaseCase())
+    const snap = solvePowerFlow(flatLoads())
     expect(snap.converged).toBe(true)
     expect(snap.frequencyHz).toBe(60)
     for (const b of snap.buses) expect(b.energized).toBe(true)
@@ -28,7 +37,7 @@ describe('islanding and breakers', () => {
   })
 
   it('tie open: generator islands, grid de-energized, droop frequency', () => {
-    const base = openLine(makeBaseCase(), 'L_TIE')
+    const base = openLine(flatLoads(), 'L_TIE')
     base.gens[0].mwSet = 100 // load above setpoint → underfrequency
     const snap = solvePowerFlow(base)
     expect(snap.converged).toBe(true)
@@ -47,7 +56,7 @@ describe('islanding and breakers', () => {
   })
 
   it('transformer breaker open: downstream dead, load excluded from totals', () => {
-    const snap = solvePowerFlow(openXfmr(makeBaseCase(), 'T_IND'))
+    const snap = solvePowerFlow(openXfmr(flatLoads(), 'T_IND'))
     expect(snap.converged).toBe(true)
     expect(snap.buses.find((b) => b.id === 'IND_LV')!.energized).toBe(false)
     expect(snap.buses.find((b) => b.id === 'IND_HV')!.energized).toBe(true)
@@ -58,7 +67,7 @@ describe('islanding and breakers', () => {
   })
 
   it('network split: gen island overfrequency, grid side still serves load', () => {
-    let net = makeBaseCase()
+    let net = flatLoads()
     net = openLine(net, 'L_GSUB_RES')
     net = openLine(net, 'L_IND_RES')
     // Tie stays closed: {GRID, RES_HV, RES_LV} + {GEN, GSUB, IND_HV, IND_LV}
@@ -72,7 +81,7 @@ describe('islanding and breakers', () => {
   })
 
   it('open line carries zero flow (validation invariant)', () => {
-    const snap = solvePowerFlow(openLine(makeBaseCase(), 'L_IND_RES'))
+    const snap = solvePowerFlow(openLine(flatLoads(), 'L_IND_RES'))
     const br = snap.branches.find((b) => b.id === 'L_IND_RES')!
     expect(br.energized).toBe(false)
     expect(br.fromMw).toBe(0)
@@ -81,7 +90,7 @@ describe('islanding and breakers', () => {
   })
 
   it('a de-energized bus re-energizes cleanly with the warm-start state', () => {
-    const base = openXfmr(makeBaseCase(), 'T_IND')
+    const base = openXfmr(flatLoads(), 'T_IND')
     const first = solvePowerFlow(base)
     expect(first.buses.find((b) => b.id === 'IND_LV')!.energized).toBe(false)
     const closed: SolveInput = {

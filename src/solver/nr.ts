@@ -69,6 +69,18 @@ export function jacobianBlocks(Y: Cx[][], V: number[], th: number[]): Blocks {
   return { dPdTh, dPdV, dQdTh, dQdV }
 }
 
+/** A voltage-dependent (ZIP) load: consumption at 1 pu scaled by
+ *  (z·V² + i·V + p) at the load bus. */
+export interface ZipLoadPu {
+  bus: number
+  /** Scheduled consumption at 1 pu, pu on the system base (positive). */
+  pPu: number
+  qPu: number
+  z: number
+  i: number
+  p: number
+}
+
 export interface NrOptions {
   maxIterations?: number
   /** Max absolute power mismatch (pu) that counts as converged. */
@@ -88,8 +100,9 @@ export interface NrResult {
  *
  * Unknowns: angles at PV+PQ buses, magnitudes at PQ buses.
  * V[slack] and V[pv] are held at their v0 entries — pass gen voltage
- * setpoints there. At seven buses this converges in a handful of
- * sub-millisecond iterations.
+ * setpoints there. `loads` carries optional ZIP voltage dependence; the
+ * mismatch and Jacobian include it exactly. At seven buses this converges
+ * in a handful of sub-millisecond iterations.
  */
 export function newtonRaphson(
   Y: Cx[][],
@@ -99,12 +112,41 @@ export function newtonRaphson(
   v0: number[],
   th0: number[],
   opts: NrOptions = {},
+  loads: ZipLoadPu[] = [],
 ): NrResult {
   const maxIter = opts.maxIterations ?? 50
   const tol = opts.tol ?? 1e-10
   const V = [...v0]
   const th = [...th0]
   th[roles.slack] = th0[roles.slack]
+
+  // ZIP loads indexed by bus (entries at one bus accumulate).
+  const byBus = new Map<number, ZipLoadPu[]>()
+  for (const ld of loads) {
+    const arr = byBus.get(ld.bus)
+    if (arr) arr.push(ld)
+    else byBus.set(ld.bus, [ld])
+  }
+  const zipP = (b: number): number => {
+    let s = 0
+    for (const ld of byBus.get(b) ?? []) s += ld.pPu * (ld.z * V[b] * V[b] + ld.i * V[b] + ld.p)
+    return s
+  }
+  const zipQ = (b: number): number => {
+    let s = 0
+    for (const ld of byBus.get(b) ?? []) s += ld.qPu * (ld.z * V[b] * V[b] + ld.i * V[b] + ld.p)
+    return s
+  }
+  const dZipP = (b: number): number => {
+    let s = 0
+    for (const ld of byBus.get(b) ?? []) s += ld.pPu * (2 * ld.z * V[b] + ld.i)
+    return s
+  }
+  const dZipQ = (b: number): number => {
+    let s = 0
+    for (const ld of byBus.get(b) ?? []) s += ld.qPu * (2 * ld.z * V[b] + ld.i)
+    return s
+  }
 
   const angIdx = [...roles.pv, ...roles.pq]
   const voltIdx = roles.pq
@@ -119,12 +161,12 @@ export function newtonRaphson(
     const mism: number[] = []
     maxMismatch = 0
     for (const i of angIdx) {
-      const d = pSp[i] - p[i]
+      const d = pSp[i] - p[i] - zipP(i)
       mism.push(d)
       maxMismatch = Math.max(maxMismatch, Math.abs(d))
     }
     for (const i of roles.pq) {
-      const d = qSp[i] - q[i]
+      const d = qSp[i] - q[i] - zipQ(i)
       mism.push(d)
       maxMismatch = Math.max(maxMismatch, Math.abs(d))
     }
@@ -135,12 +177,12 @@ export function newtonRaphson(
     const J: number[][] = Array.from({ length: m }, () => new Array<number>(m).fill(0))
     angIdx.forEach((bi, r) => {
       angIdx.forEach((bj, c) => { J[r][c] = dPdTh[bi][bj] })
-      voltIdx.forEach((bj, c) => { J[r][nAng + c] = dPdV[bi][bj] })
+      voltIdx.forEach((bj, c) => { J[r][nAng + c] = dPdV[bi][bj] + (bi === bj ? dZipP(bi) : 0) })
     })
     roles.pq.forEach((bi, r) => {
       const row = nAng + r
       angIdx.forEach((bj, c) => { J[row][c] = dQdTh[bi][bj] })
-      voltIdx.forEach((bj, c) => { J[row][nAng + c] = dQdV[bi][bj] })
+      voltIdx.forEach((bj, c) => { J[row][nAng + c] = dQdV[bi][bj] + (bi === bj ? dZipQ(bi) : 0) })
     })
 
     const dx = solveDense(J, mism)

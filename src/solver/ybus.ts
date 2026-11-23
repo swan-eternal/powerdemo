@@ -47,7 +47,10 @@ export function lineToBranchPu(
   }
 }
 
-/** Series-impedance transformer model (off-nominal taps arrive with the LTC). */
+/** Transformer as an exact two-winding model; `tapPu` (t) folds the LTC
+ * into the equivalent π: with t > 1 boosting the LV side (open-circuit
+ * V_lv = t·V_hv), ySer = y·t, yShFrom = y·(t² − t), yShTo = y·(1 − t).
+ * t = 1 reduces to the plain series model. */
 export function xfmrToBranchPu(
   xf: TransformerSpec,
   fromKv: number,
@@ -57,6 +60,8 @@ export function xfmrToBranchPu(
   const ang = Math.atan(xf.xOverR)
   const zOwn = cx(xf.zPuOnOwn * Math.cos(ang), xf.zPuOnOwn * Math.sin(ang))
   const zSys = scale(zOwn, sBaseMva / xf.mvaRating)
+  const y = div(cx(1, 0), zSys)
+  const t = xf.tapPu ?? 1
   return {
     id: xf.id,
     kind: 'xfmr',
@@ -64,9 +69,9 @@ export function xfmrToBranchPu(
     to: -1,
     fromKv,
     toKv,
-    ySer: div(cx(1, 0), zSys),
-    yShFrom: cx(0, 0),
-    yShTo: cx(0, 0),
+    ySer: scale(y, t),
+    yShFrom: scale(y, t * t - t),
+    yShTo: scale(y, 1 - t),
     ratingMva: xf.mvaRating,
   }
 }

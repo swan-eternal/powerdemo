@@ -33,16 +33,17 @@ export function makeBaseCase(): SolveInput {
       { id: 'T_SU1', hv: 'GSUB', lv: 'GEN', mvaRating: 120, zPuOnOwn: 0.1, xOverR: 40 },
       { id: 'T_SU2', hv: 'GSUB', lv: 'GEN', mvaRating: 120, zPuOnOwn: 0.1, xOverR: 40 },
       { id: 'T_IND', hv: 'IND_HV', lv: 'IND_LV', mvaRating: 100, zPuOnOwn: 0.09, xOverR: 30 },
-      { id: 'T_RES', hv: 'RES_HV', lv: 'RES_LV', mvaRating: 75, zPuOnOwn: 0.08, xOverR: 25 },
+      // LTC on the residential unit: ±10% in 0.625% steps from the faceplate.
+      { id: 'T_RES', hv: 'RES_HV', lv: 'RES_LV', mvaRating: 75, zPuOnOwn: 0.08, xOverR: 25, tapPu: 1 },
     ],
     loads: [
-      // Industrial: 90 MW at 0.85 PF.
-      { id: 'IND_MAIN', bus: 'IND_LV', mw: 90, mvar: 55.8 },
-      // Residential: four feeders, 15 MW at 0.95 PF each.
-      { id: 'RES_F1', bus: 'RES_LV', mw: 15, mvar: 4.93 },
-      { id: 'RES_F2', bus: 'RES_LV', mw: 15, mvar: 4.93 },
-      { id: 'RES_F3', bus: 'RES_LV', mw: 15, mvar: 4.93 },
-      { id: 'RES_F4', bus: 'RES_LV', mw: 15, mvar: 4.93 },
+      // Industrial: 90 MW at 0.85 PF — motor-heavy, mostly constant power.
+      { id: 'IND_MAIN', bus: 'IND_LV', mw: 90, mvar: 55.8, zip: { z: 0.2, i: 0.2, p: 0.6 } },
+      // Residential: four feeders, 15 MW at 0.95 PF each — passive-heavy mix.
+      { id: 'RES_F1', bus: 'RES_LV', mw: 15, mvar: 4.93, zip: { z: 0.5, i: 0.3, p: 0.2 } },
+      { id: 'RES_F2', bus: 'RES_LV', mw: 15, mvar: 4.93, zip: { z: 0.5, i: 0.3, p: 0.2 } },
+      { id: 'RES_F3', bus: 'RES_LV', mw: 15, mvar: 4.93, zip: { z: 0.5, i: 0.3, p: 0.2 } },
+      { id: 'RES_F4', bus: 'RES_LV', mw: 15, mvar: 4.93, zip: { z: 0.5, i: 0.3, p: 0.2 } },
     ],
     gens: [
       {
@@ -54,8 +55,14 @@ export function makeBaseCase(): SolveInput {
         droop: 0.05,
         pMaxMw: 200,
         qMinMvar: -50,
-        qMaxMvar: 90,
+        qMaxMvar: 87,
       },
+    ],
+    capBanks: [
+      // Two 12 MVAR switchable banks at Industrial LV — the Part 4 fix for
+      // the 0.94 pu / T_IND overload story.
+      { id: 'CAP1', bus: 'IND_LV', bankMvar: 12, closed: false },
+      { id: 'CAP2', bus: 'IND_LV', bankMvar: 12, closed: false },
     ],
   }
 }

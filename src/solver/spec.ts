@@ -41,18 +41,29 @@ export interface TransformerSpec {
   /** Impedance magnitude in pu on own rating. */
   zPuOnOwn: number
   xOverR: number
-  /** Off-nominal tap ratio, 1 = nominal. LTC stepping arrives in Part 4. */
+  /** Off-nominal tap ratio, 1 = nominal. >1 boosts the LV side (LTC). */
   tapPu?: number
   /** Breaker on the unit; false = open. Default closed. */
   brkClosed?: boolean
 }
 
-/** Constant-PQ load for now; ZIP coefficients arrive in Part 4. */
+/**
+ * ZIP load: scheduled MW/MVAR at 1 pu split into constant-impedance (Z,
+ * P ∝ V²), constant-current (I, P ∝ V) and constant-power (P) fractions.
+ * Fractions should sum to 1; a load without `zip` is constant-power.
+ */
+export interface ZipSpec {
+  z: number
+  i: number
+  p: number
+}
+
 export interface LoadSpec {
   id: string
   bus: string
   mw: number
   mvar: number
+  zip?: ZipSpec
 }
 
 export interface GenSpec {
@@ -78,6 +89,15 @@ export interface FaultSpec {
   zOhms: number
 }
 
+/** Switchable shunt capacitor bank, constant-admittance when closed. */
+export interface CapBankSpec {
+  id: string
+  bus: string
+  /** Rated output at 1 pu, MVAR. */
+  bankMvar: number
+  closed: boolean
+}
+
 export interface SolveInput {
   /** System MVA base for the internal per-unit model. */
   sBaseMva: number
@@ -94,6 +114,8 @@ export interface SolveInput {
   transformers: TransformerSpec[]
   loads: LoadSpec[]
   gens: GenSpec[]
+  /** Shunt capacitor banks. */
+  capBanks?: CapBankSpec[]
   /** Applied line faults (steady-state shunt at a tap point). */
   faults?: FaultSpec[]
 }

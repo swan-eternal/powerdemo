@@ -1,7 +1,7 @@
 import { Cx, add, sub, mul, scale, conj, expj, abs } from './complex'
-import { SolveInput } from './spec'
+import { SolveInput, LoadSpec } from './spec'
 import { buildYbus, BranchPu } from './ybus'
-import { newtonRaphson, injections, Roles, NrResult } from './nr'
+import { newtonRaphson, injections, Roles, NrResult, ZipLoadPu } from './nr'
 import { iBaseAmps } from './perunit'
 import { findIslands } from './islands'
 import { expandFaults } from './fault'
@@ -17,11 +17,12 @@ export type AlarmKind =
   | 'collapse'
   | 'dead-island'
   | 'fault'
+  | 'qlimit'
 
 export interface Alarm {
   kind: AlarmKind
   severity: 'alarm' | 'info'
-  /** Bus or branch id. */
+  /** Bus, branch, gen or cap id. */
   where: string
   detail: string
 }
@@ -76,8 +77,18 @@ export interface GenResult {
   mvar: number
   /** True when the generator is its island's reference (islanded operation). */
   isReference: boolean
-  /** Part 4: reactive envelope enforcement. */
-  atQLimit: boolean
+  /** Reactive limit the machine is pinned at, if any. */
+  atQLimit: 'max' | 'min' | null
+}
+
+export interface CapResult {
+  id: string
+  bus: string
+  closed: boolean
+  /** Rated output at 1 pu, MVAR. */
+  bankMvar: number
+  /** Actual output V²·bank at the solved voltage, MVAR. */
+  mvarOut: number
 }
 
 export interface Snapshot {
@@ -91,6 +102,7 @@ export interface Snapshot {
   buses: BusResult[]
   branches: BranchResult[]
   gens: GenResult[]
+  caps: CapResult[]
   alarms: Alarm[]
   totals: {
     loadMw: number
@@ -116,6 +128,32 @@ const lineConducts = (l: { brkFrom?: boolean; brkTo?: boolean }): boolean =>
   l.brkFrom !== false && l.brkTo !== false
 const xfmrConducts = (t: { brkClosed?: boolean }): boolean => t.brkClosed !== false
 
+/** ZIP voltage scaling of a load at pu voltage v (1 when constant power). */
+const zipScale = (l: LoadSpec, v: number): number => {
+  const z = l.zip
+  return z ? z.z * v * v + z.i * v + z.p : 1
+}
+
+/** Fold closed capacitor banks into bus shunts (constant admittance). */
+const foldCaps = (input: SolveInput): SolveInput => {
+  const perBus = new Map<string, number>()
+  for (const c of input.capBanks ?? []) {
+    if (c.closed !== false) perBus.set(c.bus, (perBus.get(c.bus) ?? 0) + c.bankMvar)
+  }
+  if (perBus.size === 0) return input
+  return {
+    ...input,
+    buses: input.buses.map((b) => {
+      const mv = perBus.get(b.id)
+      if (!mv) return b
+      return {
+        ...b,
+        shuntPu: { g: b.shuntPu?.g ?? 0, b: (b.shuntPu?.b ?? 0) + mv / input.sBaseMva },
+      }
+    }),
+  }
+}
+
 /**
  * One direction of data flow: SolveInput (engineering units at the boundary)
  * → islanding → per-island Ybus → Newton-Raphson → immutable Snapshot back in
@@ -127,6 +165,13 @@ const xfmrConducts = (t: { brkClosed?: boolean }): boolean => t.brkClosed !== fa
  * out of the solve and frequency follows algebraically from governor droop.
  * Islands without a source are de-energized. A failed island keeps its
  * warm-start values and raises a collapse alarm (hold-last-good behaviour).
+ *
+ * Reactive limits: after a converged solve, a PV generator beyond its
+ * reactive envelope is switched to a PQ bus pinned at the violated limit
+ * (textbook bus-type switching) and the island re-solves; the machine stops
+ * regulating voltage until the release test succeeds. The islanded reference
+ * generator cannot be switched (it carries the angle), so its limit is
+ * reported only.
  */
 export function solvePowerFlow(input: SolveInput, init?: SolveInit): Snapshot {
   try {
@@ -140,6 +185,7 @@ export function solvePowerFlow(input: SolveInput, init?: SolveInit): Snapshot {
       buses: [],
       branches: [],
       gens: [],
+      caps: [],
       alarms: [],
       totals: {
         loadMw: 0,
@@ -156,7 +202,7 @@ export function solvePowerFlow(input: SolveInput, init?: SolveInit): Snapshot {
 
 function solve(input: SolveInput, init?: SolveInit): Snapshot {
   const { sBaseMva } = input
-  const { input: net, taps, tapSet, loadShunts } = expandFaults(input)
+  const { input: net, taps, tapSet, faultActive } = expandFaults(foldCaps(input))
   const buses = net.buses
   const n = buses.length
   const idx = new Map(buses.map((b, i) => [b.id, i]))
@@ -168,15 +214,20 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
   const pBy = new Array<number>(n).fill(0)
   const qBy = new Array<number>(n).fill(0)
   const live = new Array<boolean>(n).fill(false)
+  /** Reactive limit each generator ended the solve pinned at. */
+  const genLimit = new Map<string, 'max' | 'min'>()
 
   let converged = true
   let collapse = false
   let iterations = 0
   let frequencyHz = F_BASE_HZ
 
-  const loadAt = (busId: string): { mw: number; mvar: number } =>
+  const loadAtV = (busId: string, v: number): { mw: number; mvar: number } =>
     net.loads.reduce(
-      (s, l) => (l.bus === busId ? { mw: s.mw + l.mw, mvar: s.mvar + l.mvar } : s),
+      (s, l) =>
+        l.bus === busId
+          ? { mw: s.mw + l.mw * zipScale(l, v), mvar: s.mvar + l.mvar * zipScale(l, v) }
+          : s,
       { mw: 0, mvar: 0 },
     )
 
@@ -206,20 +257,36 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
     const m = iBuses.length
     const subIdx = new Map(iBuses.map((b, i) => [b.id, i]))
     const slack = subIdx.get(island.reference)!
-    const pv = [...new Set(iGens.map((g) => subIdx.get(g.bus)!))].filter((i) => i !== slack)
-    const pvSet = new Set(pv)
-    const pq: number[] = []
-    for (let i = 0; i < m; i++) if (i !== slack && !pvSet.has(i)) pq.push(i)
+    const pv0 = [...new Set(iGens.map((g) => subIdx.get(g.bus)!))].filter((i) => i !== slack)
+    const pvSet = new Set(pv0)
+    const pq0: number[] = []
+    for (let i = 0; i < m; i++) if (i !== slack && !pvSet.has(i)) pq0.push(i)
 
     const pSp = new Array<number>(m).fill(0)
     const qSp = new Array<number>(m).fill(0)
-    for (const ld of iLoads) {
-      pSp[subIdx.get(ld.bus)!] -= ld.mw / sBaseMva
-      qSp[subIdx.get(ld.bus)!] -= ld.mvar / sBaseMva
-    }
     for (const g of iGens) {
       const b = subIdx.get(g.bus)!
       if (b !== slack) pSp[b] += g.mwSet / sBaseMva
+    }
+    // ZIP loads ride in the Newton mismatch (voltage-dependent), not in pSp.
+    const zipLoads: ZipLoadPu[] = iLoads.map((l) => {
+      const z = l.zip
+      return {
+        bus: subIdx.get(l.bus)!,
+        pPu: l.mw / sBaseMva,
+        qPu: l.mvar / sBaseMva,
+        z: z?.z ?? 0,
+        i: z?.i ?? 0,
+        p: z?.p ?? 1,
+      }
+    })
+    const zipQPu = (b: number, v: number): number => {
+      let s = 0
+      for (const ld of zipLoads) {
+        if (ld.bus !== b) continue
+        s += ld.qPu * (ld.z * v * v + ld.i * v + ld.p)
+      }
+      return s
     }
 
     const warm = (flat: boolean): { v0: number[]; th0: number[] } => ({
@@ -236,7 +303,7 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
       }
     }
 
-    const roles: Roles = { slack, pv, pq }
+    const roles: Roles = { slack, pv: pv0, pq: pq0 }
 
     // Continuation helper: rebuild Ybus with fault tap shunts scaled by λ.
     const buildScaled = (lam: number): Cx[][] =>
@@ -244,7 +311,9 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
         lam === 1
           ? iBuses
           : iBuses.map((b) =>
-              b.shuntPu ? { ...b, shuntPu: { g: b.shuntPu.g * lam, b: b.shuntPu.b * lam } } : b,
+              b.shuntPu && tapSet.has(b.id)
+                ? { ...b, shuntPu: { g: b.shuntPu.g * lam, b: b.shuntPu.b * lam } }
+                : b,
             ),
         iLines,
         iXfmrs,
@@ -253,9 +322,15 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
 
     // Newton never throws out of here: a singular Jacobian mid-solve counts
     // as a failed attempt (fell through to flat/ramp retries), not an error.
-    const trySolve = (y: Cx[][], v0: number[], th0: number[]): NrResult => {
+    const trySolve = (
+      y: Cx[][],
+      rolesX: Roles,
+      qSpX: number[],
+      v0: number[],
+      th0: number[],
+    ): NrResult => {
       try {
-        return newtonRaphson(y, pSp, qSp, roles, v0, th0)
+        return newtonRaphson(y, pSp, qSpX, rolesX, v0, th0, {}, zipLoads)
       } catch {
         return { converged: false, iterations: 0, V: [...v0], th: [...th0], maxMismatch: Infinity }
       }
@@ -263,35 +338,106 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
 
     let start = warm(false)
     applySetpoints(start)
-    let nr = trySolve(buildScaled(1), start.v0, start.th0)
-    if (nr.converged && loadShunts.length === 0) {
+    let nr = trySolve(buildScaled(1), roles, qSp, start.v0, start.th0)
+    if (nr.converged && !faultActive) {
       // Low-voltage-branch guard: a warm start from a depressed state (e.g.
       // a just-cleared fault) can converge onto the collapsed root of the
       // constant-power equations. If the flat solve finds the operable root,
-      // prefer it.
+      // prefer it. (Not while a fault is on: the depressed root is real.)
       const minV = Math.min(...roles.pq.map((i) => nr.V[i]))
       if (minV < 0.8) {
         const flat0 = warm(true)
         applySetpoints(flat0)
-        const flat = trySolve(buildScaled(1), flat0.v0, flat0.th0)
+        const flat = trySolve(buildScaled(1), roles, qSp, flat0.v0, flat0.th0)
         if (flat.converged && Math.min(...roles.pq.map((i) => flat.V[i])) > 0.8) nr = flat
       }
     }
     if (!nr.converged) {
       start = warm(true)
       applySetpoints(start)
-      nr = trySolve(buildScaled(1), start.v0, start.th0)
+      nr = trySolve(buildScaled(1), roles, qSp, start.v0, start.th0)
     }
-    if (!nr.converged && iBuses.some((b) => b.shuntPu)) {
+    if (!nr.converged && iBuses.some((b) => b.shuntPu && tapSet.has(b.id))) {
       // A low-impedance fault shunt makes one Newton step from flat start
       // violent enough to diverge. Ramp the fault admittance up in ×2 stages,
       // warm-starting each stage, so the tap voltage walks down instead.
       start = warm(true)
       for (const lam of [0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256, 0.512, 1]) {
         applySetpoints(start)
-        nr = trySolve(buildScaled(lam), start.v0, start.th0)
+        nr = trySolve(buildScaled(lam), roles, qSp, start.v0, start.th0)
         if (!nr.converged) break
         start = { v0: [...nr.V], th0: [...nr.th] }
+      }
+    }
+
+    // --- Generator reactive limits (PV→PQ bus-type switching) ---
+    if (nr.converged && pv0.length > 0) {
+      let limited = new Map<number, 'max' | 'min'>()
+      const sticky = new Set<number>()
+      for (let round = 0; round < 8; round++) {
+        const { q } = injections(buildScaled(1), nr.V, nr.th)
+        const attempt = new Map(limited)
+        let switched = false
+        for (const g of iGens) {
+          const b = subIdx.get(g.bus)!
+          if (b === slack || attempt.has(b)) continue
+          const qg = (q[b] + zipQPu(b, nr.V[b])) * sBaseMva
+          if (qg > g.qMaxMvar) {
+            attempt.set(b, 'max')
+            switched = true
+          } else if (qg < g.qMinMvar) {
+            attempt.set(b, 'min')
+            switched = true
+          }
+        }
+        if (!switched) {
+          // Release test: lift one non-sticky limit and see whether the
+          // machine can regulate again without violating.
+          let released = false
+          for (const b of limited.keys()) {
+            if (sticky.has(b)) continue
+            attempt.delete(b)
+            sticky.add(b)
+            released = true
+          }
+          if (!released) break
+        }
+        const attemptSet = new Set(attempt.keys())
+        const pv2: number[] = []
+        const pq2: number[] = []
+        for (let i = 0; i < m; i++) {
+          if (i === slack) continue
+          if (pv0.includes(i) && !attemptSet.has(i)) pv2.push(i)
+          else pq2.push(i)
+        }
+        const qSpL = [...qSp]
+        for (const [b, w] of attempt) {
+          const g = iGens.find((gg) => subIdx.get(gg.bus) === b)!
+          qSpL[b] = (w === 'max' ? g.qMaxMvar : g.qMinMvar) / sBaseMva
+        }
+        // Warm start, but re-apply the voltage setpoint on buses that are
+        // (re-)regulating: Newton holds PV entries at their v0 values, so a
+        // released machine must be restarted at its setpoint, not at the
+        // voltage it floated to while limited.
+        const v0t = [...nr.V]
+        for (const g of iGens) {
+          const b = subIdx.get(g.bus)!
+          if (b !== slack && pv2.includes(b)) v0t[b] = g.vSetPu
+        }
+        const trial = trySolve(buildScaled(1), { slack, pv: pv2, pq: pq2 }, qSpL, v0t, nr.th)
+        if (!trial.converged) break // keep the last consistent solution
+        nr = trial
+        limited = attempt
+      }
+      for (const [b, w] of limited) {
+        const g = iGens.find((gg) => subIdx.get(gg.bus) === b)!
+        genLimit.set(g.id, w)
+        alarms.push({
+          kind: 'qlimit',
+          severity: 'alarm',
+          where: g.id,
+          detail: `${w === 'max' ? 'Q-max' : 'Q-min'} ${w === 'max' ? g.qMaxMvar : g.qMinMvar} MVAR — voltage control lost`,
+        })
       }
     }
 
@@ -331,7 +477,7 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
     }
 
     if (refGen) {
-      const pGenMw = p[slack] * sBaseMva + loadAt(refGen.bus).mw
+      const pGenMw = p[slack] * sBaseMva + loadAtV(refGen.bus, nr.V[slack]).mw
       frequencyHz =
         F_BASE_HZ * (1 - ((refGen.droop ?? 0.05) * (pGenMw - refGen.mwSet)) / refGen.mvaRating)
       if (frequencyHz < 59.5 || pGenMw > refGen.pMaxMw) {
@@ -347,6 +493,19 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
           severity: 'alarm',
           where: refGen.id,
           detail: `${frequencyHz.toFixed(2)} Hz`,
+        })
+      }
+      // The reference machine carries the island angle and cannot be
+      // switched to PQ; report its reactive limit instead.
+      const qRef = (q[slack] + zipQPu(slack, nr.V[slack])) * sBaseMva
+      if (qRef > refGen.qMaxMvar || qRef < refGen.qMinMvar) {
+        const w = qRef > refGen.qMaxMvar ? 'max' : 'min'
+        genLimit.set(refGen.id, w)
+        alarms.push({
+          kind: 'qlimit',
+          severity: 'alarm',
+          where: refGen.id,
+          detail: `${w === 'max' ? 'Q-max' : 'Q-min'} while islanded — voltage at risk`,
         })
       }
     }
@@ -478,7 +637,7 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
   // --- Generator results ---
   const gens: GenResult[] = net.gens.map((g) => {
     const b = idx.get(g.bus)!
-    const ld = loadAt(g.bus)
+    const ld = loadAtV(g.bus, vBy[b])
     const isRef = live[b] && islands.some((i) => i.genRef && i.reference === g.bus)
     return {
       id: g.id,
@@ -486,7 +645,20 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
       mw: live[b] ? pBy[b] * sBaseMva + ld.mw : 0,
       mvar: live[b] ? qBy[b] * sBaseMva + ld.mvar : 0,
       isReference: isRef,
-      atQLimit: false,
+      atQLimit: live[b] ? genLimit.get(g.id) ?? null : null,
+    }
+  })
+
+  // --- Capacitor bank results ---
+  const caps: CapResult[] = (input.capBanks ?? []).map((c) => {
+    const bi = idx.get(c.bus)
+    const v = bi !== undefined && live[bi] ? vBy[bi] : 0
+    return {
+      id: c.id,
+      bus: c.bus,
+      closed: c.closed !== false,
+      bankMvar: c.bankMvar,
+      mvarOut: c.closed !== false ? v * v * c.bankMvar : 0,
     }
   })
 
@@ -522,26 +694,18 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
   const slackLive = live[slackI]
   const slackHasGen = input.gens.some((g) => idx.get(g.bus) === slackI)
   const slackSrcMw =
-    slackLive && !slackHasGen ? pBy[slackI] * sBaseMva + loadAt(input.slackBusId).mw : 0
+    slackLive && !slackHasGen ? pBy[slackI] * sBaseMva + loadAtV(input.slackBusId, vBy[slackI]).mw : 0
   const slackSrcMvar =
-    slackLive && !slackHasGen ? qBy[slackI] * sBaseMva + loadAt(input.slackBusId).mvar : 0
-  // Served load: constant-power loads report their schedule; during a fault
-  // study loads ride at constant impedance and report V²·Y actuals.
+    slackLive && !slackHasGen ? qBy[slackI] * sBaseMva + loadAtV(input.slackBusId, vBy[slackI]).mvar : 0
+  // Served load is ZIP-evaluated at the solved voltage: constant-power
+  // fractions report their schedule, impedance fractions sag with V².
   let loadMw = 0
   let loadMvar = 0
-  if (loadShunts.length > 0) {
-    for (const sh of loadShunts) {
-      if (!busById.get(sh.bus)?.energized) continue
-      const v2 = vBy[idx.get(sh.bus)!] * vBy[idx.get(sh.bus)!]
-      loadMw += v2 * sh.gPu * sBaseMva
-      loadMvar += -v2 * sh.bPu * sBaseMva
-    }
-  } else {
-    for (const l of net.loads) {
-      if (!busById.get(l.bus)?.energized) continue
-      loadMw += l.mw
-      loadMvar += l.mvar
-    }
+  for (const l of net.loads) {
+    if (!busById.get(l.bus)?.energized) continue
+    const sc = zipScale(l, vBy[idx.get(l.bus)!])
+    loadMw += l.mw * sc
+    loadMvar += l.mvar * sc
   }
   const genMw = gens.reduce((s, g) => s + g.mw, 0) + slackSrcMw
   const genMvar = gens.reduce((s, g) => s + g.mvar, 0) + slackSrcMvar
@@ -555,6 +719,7 @@ function solve(input: SolveInput, init?: SolveInit): Snapshot {
     buses: busResults,
     branches: branchResults,
     gens,
+    caps,
     alarms,
     totals: {
       loadMw,

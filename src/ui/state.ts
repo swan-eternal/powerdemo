@@ -18,6 +18,10 @@ export interface ControlState {
   feeders: FeederControl[]
   /** Breaker states by breaker id; true = closed. */
   breakers: Record<string, boolean>
+  /** Cap bank states by id; true = closed (in service). */
+  capBanks: Record<string, boolean>
+  /** LTC tap on T_RES, pu (1 = nominal; ±10% range). */
+  ltcTap: number
   /** Single applied line fault; null = none. */
   fault: { lineId: string; atPct: number; zOhms: number } | null
 }
@@ -46,6 +50,10 @@ export function initialControlState(base: SolveInput): ControlState {
   for (const t of base.transformers) {
     breakers[xfmrBrkId(t.id)] = t.brkClosed !== false
   }
+  const capBanks: Record<string, boolean> = {}
+  for (const c of base.capBanks ?? []) {
+    capBanks[c.id] = c.closed
+  }
   return {
     gen: {
       mwSet: base.gens[0].mwSet,
@@ -58,6 +66,8 @@ export function initialControlState(base: SolveInput): ControlState {
       return { n, mw: f.mw, pf: pfOf(f.mw, f.mvar) }
     }),
     breakers,
+    capBanks,
+    ltcTap: base.transformers.find((t) => t.id === 'T_RES')?.tapPu ?? 1,
     fault: null,
   }
 }
@@ -78,8 +88,10 @@ export function buildCase(base: SolveInput, c: ControlState): SolveInput {
     })),
     transformers: base.transformers.map((t) => ({
       ...t,
+      tapPu: t.id === 'T_RES' ? c.ltcTap : t.tapPu,
       brkClosed: c.breakers[xfmrBrkId(t.id)] ?? true,
     })),
+    capBanks: (base.capBanks ?? []).map((b) => ({ ...b, closed: c.capBanks[b.id] ?? b.closed })),
     loads: base.loads.map((l) => {
       if (l.id === IND_ID) {
         return { ...l, mw: c.ind.mw, mvar: mwToMvar(c.ind.mw, c.ind.pf) }

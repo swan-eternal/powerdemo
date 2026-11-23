@@ -154,7 +154,7 @@ export function createPanel(
 
       const hint = card('How to use')
       hint.innerHTML +=
-        '<p class="hint">Click any element on the one-line — bus, line, transformer, generator or load — to open its faceplate with readouts and controls. Generator MW/voltage, load MW/power factor and line length are live. Breaker switching, LTC taps and ZIP loads arrive in Parts 3–4.</p>'
+        '<p class="hint">Click any element on the one-line — bus, line, transformer, generator, load, cap bank or breaker — to open its faceplate. Breakers switch, faults apply on lines, the cap banks and LTC are live, and loads ride a ZIP mix that sheds with voltage. Try: push G1’s voltage setpoint to 1.05 to chase the low voltage and watch it hit its reactive ceiling — then close the cap banks at Industrial LV.</p>'
       return
     }
 
@@ -206,7 +206,20 @@ export function createPanel(
             return b ? `${f(b.kv)} kV · ${b.vmagPu.toFixed(3)} pu · ${f(b.thetaDeg)}°` : '—'
           },
         },
-        { label: 'Reactive limits', bind: () => 'enforced in Part 4' },
+        {
+          label: 'Reactive envelope',
+          bind: (_s, i) => `${i.gens[0].qMinMvar} … +${i.gens[0].qMaxMvar} MVAR`,
+        },
+        {
+          label: 'Voltage control',
+          bind: (s) => {
+            const g = s.gens[0]
+            if (g.atQLimit === 'max') return `AT Q-MAX ${f(g.mvar, 0)} MVAR — control lost`
+            if (g.atQLimit === 'min') return `AT Q-MIN ${f(g.mvar, 0)} MVAR — control lost`
+            return `Regulating ${state.gen.vSetPu.toFixed(3)} pu`
+          },
+          alarm: (s) => !!s.gens[0].atQLimit,
+        },
       ]
       kvList(c, rows)
       sliders(c, [
@@ -229,6 +242,11 @@ export function createPanel(
           fmt: (v) => `${v.toFixed(3)} pu`,
         },
       ])
+      const genHint = document.createElement('p')
+      genHint.className = 'hint'
+      genHint.textContent =
+        'Push the voltage setpoint up to chase a sagging system and the machine runs into its reactive ceiling — it stops regulating, the terminal floats, and the alarm card flags it. Local MVARs (cap banks at Industrial LV) or backing off the setpoint bring it back.'
+      c.appendChild(genHint)
       return
     }
 
@@ -452,9 +470,87 @@ export function createPanel(
             i.transformers.find((x) => x.id === sel!.id)?.brkClosed !== false ? 'closed' : 'OPEN',
         },
       ]
+      if (sel.id === 'T_RES') {
+        rows.push(
+          {
+            label: 'LTC tap',
+            bind: () => {
+              const boost = (state.ltcTap - 1) * 100
+              const n = Math.round(boost / 0.625)
+              return `${boost >= 0 ? '+' : ''}${boost.toFixed(3)}% · ${Math.abs(n)} ${n >= 0 ? 'raise' : 'lower'}`
+            },
+          },
+          {
+            label: 'Residential LV',
+            bind: (s) => {
+              const b = s.buses.find((x) => x.id === 'RES_LV')
+              return b ? `${b.vmagPu.toFixed(3)} pu` : '—'
+            },
+          },
+        )
+      }
       kvList(c, rows)
-      const note = card('Note')
-      note.innerHTML += '<p class="hint">Click the breaker square on the diagram to open or close this unit. Tap raise/lower (LTC) arrives in Part 4.</p>'
+      if (sel.id === 'T_RES') {
+        sliders(c, [
+          {
+            label: 'Tap boost (LV side)',
+            min: -10,
+            max: 10,
+            step: 0.625,
+            get: () => (state.ltcTap - 1) * 100,
+            set: (v) => (state.ltcTap = 1 + v / 100),
+            fmt: (v) => `${v >= 0 ? '+' : ''}${v.toFixed(3)}%`,
+          },
+        ])
+        const ltcHint = document.createElement('p')
+        ltcHint.className = 'hint'
+        ltcHint.textContent =
+          'LTC: ±10% in 0.625% steps. Raise boosts Residential LV — the ZIP load follows the voltage, so served MW rises too.'
+        c.appendChild(ltcHint)
+      } else {
+        const note = card('Note')
+        note.innerHTML += '<p class="hint">Click the breaker square on the diagram to open or close this unit.</p>'
+      }
+      return
+    }
+
+    if (sel.kind === 'cap') {
+      const spec = base.capBanks?.find((b) => b.id === sel!.id)
+      const c = card(`Cap bank ${sel.id}`, 'Industrial LV')
+      rows = [
+        { label: 'Status', bind: () => (state.capBanks[sel!.id] ? 'IN SERVICE' : 'OPEN') },
+        { label: 'Rating', bind: () => (spec ? `${spec.bankMvar} MVAR at 1 pu` : '—') },
+        {
+          label: 'Output',
+          bind: (s) => {
+            const r = s.caps.find((x) => x.id === sel!.id)
+            return r ? `${f(r.mvarOut, 1)} MVAR` : '—'
+          },
+        },
+        {
+          label: 'Bus voltage',
+          bind: (s) => {
+            const b = s.buses.find((x) => x.id === 'IND_LV')
+            return b ? `${b.vmagPu.toFixed(3)} pu` : '—'
+          },
+        },
+      ]
+      kvList(c, rows)
+      const closed = state.capBanks[sel.id]
+      const btn = document.createElement('button')
+      btn.className = `btn ${closed ? 'danger' : 'ok'}`
+      btn.textContent = closed ? 'OPEN BANK' : 'CLOSE BANK'
+      btn.addEventListener('click', () => {
+        state.capBanks[sel!.id] = !closed
+        onChange()
+        render()
+      })
+      c.appendChild(btn)
+      const capHint = document.createElement('p')
+      capHint.className = 'hint'
+      capHint.textContent =
+        'Fixed shunt — output follows V². Local MVARs support Industrial LV, unload T_IND, and take reactive burden off the generator. Close both banks to lift the bus above 0.95 pu.'
+      c.appendChild(capHint)
       return
     }
 
@@ -518,6 +614,27 @@ export function createPanel(
           bind: (_s, i) => {
             const ld = loadOf(i)
             return ld ? `${f(Math.hypot(ld.mw, ld.mvar))} MVA` : '—'
+          },
+        },
+        {
+          label: 'ZIP mix',
+          bind: (_s, i) => {
+            const z = loadOf(i)?.zip
+            return z
+              ? `${Math.round(z.z * 100)}% Z · ${Math.round(z.i * 100)}% I · ${Math.round(z.p * 100)}% P`
+              : 'constant power'
+          },
+        },
+        {
+          label: 'Served at bus V',
+          bind: (s, i) => {
+            const ld = loadOf(i)
+            const b = s.buses.find((x) => x.id === ld?.bus)
+            if (!ld || !b || !b.energized) return '—'
+            const sc = ld.zip
+              ? ld.zip.z * b.vmagPu ** 2 + ld.zip.i * b.vmagPu + ld.zip.p
+              : 1
+            return `${f(ld.mw * sc)} MW · ${f(ld.mvar * sc)} MVAR`
           },
         },
       ]

@@ -7,6 +7,7 @@ export type Selection =
   | { kind: 'xfmr'; id: string }
   | { kind: 'gen'; id: string }
   | { kind: 'load'; id: string }
+  | { kind: 'cap'; id: string }
   | { kind: 'breaker'; id: string }
   | null
 
@@ -256,6 +257,22 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     clickable(g, { kind: 'load', id: `RES_F${f.n}` })
   }
 
+  // --- Capacitor banks at Industrial LV (switchable shunts) ---
+  for (const cb of [
+    { id: 'CAP1', x: 534 },
+    { id: 'CAP2', x: 562 },
+  ]) {
+    const g = e('g', { class: 'live capbank' })
+    host.appendChild(g)
+    e('path', { d: `M 522 105 H ${cb.x} V 114`, class: 'ln sketch cap-wire' }, g)
+    e('path', { d: `M ${cb.x - 8} 114 H ${cb.x + 8}`, class: 'cap-plate' }, g)
+    e('path', { d: `M ${cb.x - 8} 120 H ${cb.x + 8}`, class: 'cap-plate' }, g)
+    e('path', { d: `M ${cb.x} 120 V 126`, class: 'cap-plate' }, g)
+    text(g, cb.x, 138, 't-sub', 'middle', cb.id.replace('CAP', 'C'))
+    e('rect', { x: cb.x - 12, y: 98, width: 24, height: 46, class: 'hit' }, g)
+    clickable(g, { kind: 'cap', id: cb.id })
+  }
+
   const loadingClass = (pct: number): string =>
     pct > 100 ? 't-sub t-alarm' : pct > 90 ? 't-sub t-warn' : 't-sub'
 
@@ -376,6 +393,13 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
         xfmrVal['T_SU'].setAttribute('class', loadingClass(pct))
       } else {
         xfmrVal['T_SU'].textContent = ''
+      }
+
+      for (const c of input.capBanks ?? []) {
+        const g = selGroups.get(`cap:${c.id}`)
+        if (!g) continue
+        g.classList.toggle('on', c.closed !== false)
+        g.classList.toggle('dead', !busById.get(c.bus)?.energized)
       }
 
       const gen = snap.gens[0]

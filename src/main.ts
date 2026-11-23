@@ -31,6 +31,7 @@ const ALARM_LABEL: Record<string, string> = {
   collapse: 'Collapse',
   'dead-island': 'De-energized',
   fault: 'Fault',
+  qlimit: 'Generator Q limit',
 }
 
 const whereLabel = (w: string): string => base.buses.find((b) => b.id === w)?.label ?? w
@@ -54,12 +55,14 @@ function refresh(): void {
   const fBad = snap.alarms.some((a) => a.kind === 'underfreq' || a.kind === 'overfreq')
   const alarmCount = snap.alarms.filter((a) => a.severity === 'alarm').length
   const flt = snap.branches.find((b) => b.fault?.live)?.fault
+  const capOut = snap.caps.reduce((t, c) => t + c.mvarOut, 0)
   const collapseTag = snap.collapse ? '<span class="freq-bad">⚠ collapse · </span>' : ''
   badge.innerHTML =
     `${collapseTag}load <b>${snap.totals.loadMw.toFixed(1)}</b> MW · gen <b>${snap.totals.genMw.toFixed(1)}</b> MW · ` +
     `<span class="${fBad ? 'freq-bad' : ''}"><b>${snap.frequencyHz.toFixed(2)} Hz</b></span> · ` +
     `losses <b>${snap.totals.lossMw.toFixed(2)}</b> MW · NR <b>${snap.iterations}</b> it` +
     (flt ? ` · <span class="freq-bad">⚡ fault <b>${flt.faultAmps.toFixed(0)} A</b></span>` : '') +
+    (capOut > 0 ? ` · caps <b>${capOut.toFixed(1)}</b> MVAR` : '') +
     (alarmCount ? ` · <span class="freq-bad">⚠ <b>${alarmCount}</b></span>` : '')
 }
 

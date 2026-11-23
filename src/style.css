@@ -237,3 +237,15 @@ html, body {
 @media (max-width: 900px) {
   #layout { grid-template-columns: 1fr; }
 }
+
+/* Capacitor banks (Part 4) */
+.capbank { cursor: pointer; }
+.capbank .cap-plate {
+  stroke: #8ea4bd;
+  stroke-width: 2;
+  fill: none;
+}
+.capbank:not(.on) .cap-plate { opacity: 0.45; }
+.capbank.on .cap-plate { stroke: var(--warn); }
+.capbank.on .cap-wire { stroke: var(--warn); }
+.capbank.dead { opacity: 0.35; }
