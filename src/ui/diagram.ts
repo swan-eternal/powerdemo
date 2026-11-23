@@ -61,7 +61,7 @@ const BUS: Record<string, BusDraw> = {
   GSUB: { x: 185, y: 305, w: 96, name: 'Generation\nSubstation', nx: 128, ny: 280, anchor: 'end', v1y: 314, v2y: 330 },
   IND_HV: { x: 480, y: 205, w: 84, name: 'Industrial HV', nx: 430, ny: 168, anchor: 'end', v1y: 186, v2y: 202 },
   IND_LV: { x: 480, y: 105, w: 84, name: 'Industrial LV', nx: 428, ny: 88, anchor: 'end', v1y: 104, v2y: 120 },
-  RES_HV: { x: 770, y: 305, w: 84, name: 'Residential HV', nx: 820, ny: 288, anchor: 'start', v1y: 308, v2y: 324 },
+  RES_HV: { x: 770, y: 305, w: 84, name: 'Residential HV', nx: 826, ny: 288, anchor: 'start', v1y: 308, v2y: 324 },
   RES_LV: { x: 770, y: 425, w: 150, name: 'Residential LV', nx: 685, ny: 416, anchor: 'end', v1y: 432, v2y: 448 },
 }
 
@@ -74,13 +74,15 @@ interface LineDraw {
   /** flow text block */
   tx: number
   ty: number
+  /** perpendicular label side (+1/-1) for the from/to breaker current labels */
+  ampSides: [number, number]
 }
 
 const LINES: LineDraw[] = [
-  { id: 'L_GSUB_IND', fromBus: 'GSUB', from: [185, 305], to: [480, 205], tx: 322, ty: 232 },
-  { id: 'L_GSUB_RES', fromBus: 'GSUB', from: [185, 305], to: [770, 305], tx: 455, ty: 316 },
-  { id: 'L_IND_RES', fromBus: 'IND_HV', from: [480, 205], to: [770, 305], tx: 600, ty: 210 },
-  { id: 'L_TIE', fromBus: 'GRID', from: [955, 145], to: [770, 305], tx: 850, ty: 195 },
+  { id: 'L_GSUB_IND', fromBus: 'GSUB', from: [185, 305], to: [480, 205], tx: 322, ty: 232, ampSides: [-1, 1] },
+  { id: 'L_GSUB_RES', fromBus: 'GSUB', from: [185, 305], to: [770, 305], tx: 455, ty: 316, ampSides: [-1, 1] },
+  { id: 'L_IND_RES', fromBus: 'IND_HV', from: [480, 205], to: [770, 305], tx: 600, ty: 210, ampSides: [1, -1] },
+  { id: 'L_TIE', fromBus: 'GRID', from: [955, 145], to: [770, 305], tx: 850, ty: 195, ampSides: [1, -1] },
 ]
 
 interface XfmrDraw {
@@ -92,13 +94,16 @@ interface XfmrDraw {
   brkY: number
   label?: string
   lx?: number
+  /** breaker current label: x-offset side and which side's current it shows */
+  ampSide?: 1 | -1
+  ampEnd?: 'from' | 'to'
 }
 
 const XFMRS: XfmrDraw[] = [
-  { id: 'T_SU1', x: 167, yTop: 311, yBot: 456, symY: 392, brkY: 437 },
-  { id: 'T_SU2', x: 203, yTop: 311, yBot: 456, symY: 392, brkY: 437 },
-  { id: 'T_IND', x: 480, yTop: 111, yBot: 199, symY: 155, brkY: 182, label: 'IND', lx: 502 },
-  { id: 'T_RES', x: 770, yTop: 311, yBot: 419, symY: 367, brkY: 334, label: 'LTC', lx: 792 },
+  { id: 'T_SU1', x: 167, yTop: 311, yBot: 456, symY: 392, brkY: 437, ampSide: -1, ampEnd: 'to' },
+  { id: 'T_SU2', x: 203, yTop: 311, yBot: 456, symY: 392, brkY: 437, ampSide: 1, ampEnd: 'to' },
+  { id: 'T_IND', x: 480, yTop: 111, yBot: 199, symY: 155, brkY: 182, label: 'IND', lx: 502, ampSide: 1, ampEnd: 'to' },
+  { id: 'T_RES', x: 770, yTop: 311, yBot: 419, symY: 367, brkY: 334, label: 'LTC', lx: 792, ampSide: -1, ampEnd: 'from' },
 ]
 
 const GEN = { x: 185, y: 480, r: 24 }
@@ -115,6 +120,7 @@ const FEEDER_Y2 = 472
 
 const f1 = (x: number, d = 1): string => x.toFixed(d)
 const f0 = (x: number): string => x.toFixed(0)
+const fmtAmps = (a: number): string => (a >= 1000 ? `${(a / 1000).toFixed(1)} kA` : `${f0(a)} A`)
 
 export function createDiagram(host: SVGSVGElement): DiagramHandle {
   const selGroups = new Map<string, SVGGElement>()
@@ -127,6 +133,7 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
   }
 
   const brkRects: Record<string, SVGRectElement> = {}
+  const brkAmps: Record<string, SVGTextElement> = {}
   const drawBreaker = (id: string, x: number, y: number): void => {
     const g = e('g', {})
     host.appendChild(g)
@@ -177,14 +184,22 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
       e('path', { d: '', class: 'flow off faultflow' }, g),
     ]
     // breakers at both ends (red closed / green open)
-    for (const [t, end] of [
-      [0.16, 'from'],
-      [0.84, 'to'],
-    ] as [number, 'from' | 'to'][]) {
-      drawBreaker(
-        `${l.id}:${end}`,
-        l.from[0] + t * (l.to[0] - l.from[0]),
-        l.from[1] + t * (l.to[1] - l.from[1]),
+    const dxl = l.to[0] - l.from[0]
+    const dyl = l.to[1] - l.from[1]
+    const llen = Math.hypot(dxl, dyl)
+    for (const [t, end, side] of [
+      [0.16, 'from', l.ampSides[0]],
+      [0.84, 'to', l.ampSides[1]],
+    ] as [number, 'from' | 'to', number][]) {
+      const bx = l.from[0] + t * dxl
+      const by = l.from[1] + t * dyl
+      drawBreaker(`${l.id}:${end}`, bx, by)
+      // terminal-current label, set off perpendicular to the line
+      brkAmps[`${l.id}:${end}`] = text(
+        host,
+        bx + (side * 14 * -dyl) / llen,
+        by + (side * 14 * dxl) / llen + 3.5,
+        't-brk',
       )
     }
     lineVal[l.id] = [
@@ -210,6 +225,15 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
       e('circle', { cx: xf.x, cy: xf.symY + dy, r: 9, class: 'xfmr-circle sketch' }, g)
     }
     drawBreaker(`${xf.id}:brk`, xf.x, xf.brkY)
+    if (xf.ampSide) {
+      brkAmps[`${xf.id}:brk`] = text(
+        host,
+        xf.x + xf.ampSide * 13,
+        xf.brkY + 3.5,
+        't-brk',
+        xf.ampSide > 0 ? 'start' : 'end',
+      )
+    }
     if (xf.label) text(g, xf.lx!, xf.symY - 18, 't-sub', 'start', xf.label)
     xfmrVal[xf.id] = text(g, xf.lx ?? xf.x + (xf.x === 167 ? -12 : 12), xf.symY + 4, 't-sub', 'start', '')
     e('rect', { x: xf.x - 16, y: xf.symY - 22, width: 32, height: 44, class: 'hit' }, g)
@@ -372,6 +396,19 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
             feed(ffTo, l.to[0], l.to[1], flipped ? br.ampsFrom : br.ampsTo)
           }
         }
+        // per-terminal current at each line breaker (shows the fault infeed split)
+        {
+          const specLn = input.lines.find((x) => x.id === l.id)
+          const flipped = !!specLn && specLn.from !== l.fromBus
+          const setBrkAmps = (end: 'from' | 'to', amps: number): void => {
+            const el = brkAmps[`${l.id}:${end}`]
+            el.textContent =
+              brkIsClosed(`${l.id}:${end}`) && br.energized && amps >= 1 ? fmtAmps(amps) : ''
+            el.setAttribute('class', `t-brk${br.fault?.live ? ' hot' : ''}`)
+          }
+          setBrkAmps('from', flipped ? br.ampsTo : br.ampsFrom)
+          setBrkAmps('to', flipped ? br.ampsFrom : br.ampsTo)
+        }
         if (!br.energized) {
           t1.textContent = breakerOpenOn(l.id) ? 'OPEN' : 'DE-ENERGIZED'
           t2.textContent = ''
@@ -398,12 +435,19 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
       for (const xf of XFMRS) {
         const br = brById.get(xf.id)
         const t = xfmrVal[xf.id]
+        const lbl = brkAmps[`${xf.id}:brk`]
         if (!br || !br.energized) {
           t.textContent = ''
+          if (lbl) lbl.textContent = ''
           continue
         }
         t.textContent = `${f1(br.loadingPct, 0)}%`
         t.setAttribute('class', loadingClass(br.loadingPct))
+        if (lbl) {
+          const amps = xf.ampEnd === 'from' ? br.ampsFrom : br.ampsTo
+          const closed = input.transformers.find((x) => x.id === xf.id)?.brkClosed !== false
+          lbl.textContent = closed && amps >= 1 ? fmtAmps(amps) : ''
+        }
       }
       const su1 = brById.get('T_SU1')
       const su2 = brById.get('T_SU2')

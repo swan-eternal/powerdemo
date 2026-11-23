@@ -255,3 +255,14 @@ html, body {
   stroke: var(--alarm);
   stroke-width: 2.6;
 }
+
+/* breaker terminal-current labels */
+.t-brk {
+  fill: #7d8fa6;
+  font-size: 9.5px;
+  pointer-events: none;
+}
+.t-brk.hot {
+  fill: var(--alarm);
+  font-weight: 600;
+}

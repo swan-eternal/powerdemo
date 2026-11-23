@@ -691,20 +691,31 @@ export function createPanel(
   }
 
   let deselectHook: () => void = () => {}
+  // last seen solution — lets select() paint values immediately instead of
+  // showing labels-only until the next refresh (blank-on-load bug)
+  let lastSnap: Snapshot | null = null
+  let lastInput: SolveInput | null = null
+  const fill = (): void => {
+    if (!lastSnap || !lastInput) return
+    for (const { dd, row } of rowEls) {
+      dd.textContent = row.bind(lastSnap, lastInput)
+      dd.className = ''
+      if (row.alarm?.(lastSnap, lastInput)) dd.className = 'alarm'
+      else if (row.warn?.(lastSnap, lastInput)) dd.className = 'warn'
+    }
+  }
   render()
 
   return {
     select(next) {
       sel = next
       render()
+      fill()
     },
     updateValues(snap, input) {
-      for (const { dd, row } of rowEls) {
-        dd.textContent = row.bind(snap, input)
-        dd.className = ''
-        if (row.alarm?.(snap, input)) dd.className = 'alarm'
-        else if (row.warn?.(snap, input)) dd.className = 'warn'
-      }
+      lastSnap = snap
+      lastInput = input
+      fill()
     },
     onDeselect(cb: () => void) {
       deselectHook = cb
