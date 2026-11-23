@@ -55,11 +55,11 @@ interface BusDraw {
 }
 
 const BUS: Record<string, BusDraw> = {
-  GRID: { x: 955, y: 145, w: 64, name: 'Grid Tie', nx: 955, ny: 128, anchor: 'middle', v1y: 168, v2y: 184 },
+  GRID: { x: 955, y: 145, w: 64, name: 'Grid Tie', nx: 995, ny: 128, anchor: 'start', v1y: 148, v2y: 164 },
   GSUB: { x: 185, y: 305, w: 96, name: 'Generation\nSubstation', nx: 128, ny: 280, anchor: 'end', v1y: 314, v2y: 330 },
-  IND_HV: { x: 480, y: 205, w: 84, name: 'Industrial HV', nx: 480, ny: 190, anchor: 'middle', v1y: 148, v2y: 164 },
-  IND_LV: { x: 480, y: 335, w: 84, name: 'Industrial LV', nx: 530, ny: 326, anchor: 'start', v1y: 342, v2y: 358 },
-  RES_HV: { x: 770, y: 255, w: 84, name: 'Residential HV', nx: 770, ny: 240, anchor: 'middle', v1y: 198, v2y: 214 },
+  IND_HV: { x: 480, y: 205, w: 84, name: 'Industrial HV', nx: 430, ny: 168, anchor: 'end', v1y: 186, v2y: 202 },
+  IND_LV: { x: 480, y: 105, w: 84, name: 'Industrial LV', nx: 428, ny: 88, anchor: 'end', v1y: 104, v2y: 120 },
+  RES_HV: { x: 770, y: 255, w: 84, name: 'Residential HV', nx: 720, ny: 192, anchor: 'end', v1y: 208, v2y: 224 },
   RES_LV: { x: 770, y: 395, w: 150, name: 'Residential LV', nx: 685, ny: 386, anchor: 'end', v1y: 402, v2y: 418 },
 }
 
@@ -75,8 +75,8 @@ interface LineDraw {
 const LINES: LineDraw[] = [
   { id: 'L_GSUB_IND', from: [185, 305], to: [480, 205], tx: 322, ty: 232 },
   { id: 'L_GSUB_RES', from: [185, 305], to: [770, 255], tx: 455, ty: 316 },
-  { id: 'L_IND_RES', from: [480, 205], to: [770, 255], tx: 618, ty: 194 },
-  { id: 'L_TIE', from: [955, 145], to: [770, 255], tx: 838, ty: 190 },
+  { id: 'L_IND_RES', from: [480, 205], to: [770, 255], tx: 618, ty: 172 },
+  { id: 'L_TIE', from: [955, 145], to: [770, 255], tx: 840, ty: 172 },
 ]
 
 interface XfmrDraw {
@@ -93,13 +93,13 @@ interface XfmrDraw {
 const XFMRS: XfmrDraw[] = [
   { id: 'T_SU1', x: 167, yTop: 311, yBot: 456, symY: 392, brkY: 437 },
   { id: 'T_SU2', x: 203, yTop: 311, yBot: 456, symY: 392, brkY: 437 },
-  { id: 'T_IND', x: 480, yTop: 211, yBot: 329, symY: 259, brkY: 228, label: 'IND', lx: 502 },
+  { id: 'T_IND', x: 480, yTop: 111, yBot: 199, symY: 155, brkY: 182, label: 'IND', lx: 502 },
   { id: 'T_RES', x: 770, yTop: 261, yBot: 389, symY: 317, brkY: 284, label: 'LTC', lx: 792 },
 ]
 
 const GEN = { x: 185, y: 480, r: 24 }
 
-const IND_ARROW = { x: 480, y1: 341, y2: 388 }
+const IND_ARROW = { x: 480, y1: 99, y2: 52 } // upward, above Industrial LV
 const FEEDERS = [
   { n: 1, x: 710 },
   { n: 2, x: 755 },
@@ -202,17 +202,17 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     clickable(g, { kind: 'gen', id: 'G1' })
   }
 
-  // --- Industrial load arrow ---
+  // --- Industrial load arrow (points up, above Industrial LV) ---
   {
     const g = e('g', { class: 'live' })
     host.appendChild(g)
     e('path', { d: `M ${IND_ARROW.x} ${IND_ARROW.y1} L ${IND_ARROW.x} ${IND_ARROW.y2}`, class: 'load-arrow sketch' }, g)
-    e('path', { d: `M ${IND_ARROW.x - 5} ${IND_ARROW.y2 - 8} L ${IND_ARROW.x} ${IND_ARROW.y2} L ${IND_ARROW.x + 5} ${IND_ARROW.y2 - 8} Z`, class: 'load-head sketch' }, g)
+    e('path', { d: `M ${IND_ARROW.x - 5} ${IND_ARROW.y2 + 8} L ${IND_ARROW.x} ${IND_ARROW.y2} L ${IND_ARROW.x + 5} ${IND_ARROW.y2 + 8} Z`, class: 'load-head sketch' }, g)
     indVal = [
-      text(g, IND_ARROW.x, IND_ARROW.y2 + 22, 't-val'),
-      text(g, IND_ARROW.x, IND_ARROW.y2 + 38, 't-sub'),
+      text(g, IND_ARROW.x, IND_ARROW.y2 - 16, 't-val'),
+      text(g, IND_ARROW.x, IND_ARROW.y2 - 32, 't-sub'),
     ]
-    e('rect', { x: IND_ARROW.x - 14, y: IND_ARROW.y1, width: 28, height: 56, class: 'hit' }, g)
+    e('rect', { x: IND_ARROW.x - 14, y: IND_ARROW.y2 - 34, width: 28, height: IND_ARROW.y1 - IND_ARROW.y2 + 36, class: 'hit' }, g)
     clickable(g, { kind: 'load', id: 'IND_MAIN' })
   }
 
