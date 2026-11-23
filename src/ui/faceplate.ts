@@ -297,7 +297,9 @@ export function createPanel(
     }
 
     if (sel.kind === 'bus') {
-      const c = card(sel.id, 'bus')
+      const id = sel.id
+      const label = base.buses.find((b) => b.id === id)?.label ?? id
+      const c = card(label, 'bus')
       rows = [
         {
           label: 'Voltage',

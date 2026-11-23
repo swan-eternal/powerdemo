@@ -45,7 +45,8 @@ interface BusDraw {
   x: number
   y: number
   w: number
-  /** name/values placement */
+  /** User-facing name; '\n' starts a new line. */
+  name: string
   nx: number
   ny: number
   anchor: 'start' | 'middle' | 'end'
@@ -54,12 +55,12 @@ interface BusDraw {
 }
 
 const BUS: Record<string, BusDraw> = {
-  GRID: { x: 955, y: 145, w: 64, nx: 955, ny: 128, anchor: 'middle', v1y: 168, v2y: 184 },
-  GSUB: { x: 185, y: 305, w: 96, nx: 128, ny: 292, anchor: 'end', v1y: 310, v2y: 326 },
-  IND_HV: { x: 480, y: 205, w: 84, nx: 480, ny: 190, anchor: 'middle', v1y: 148, v2y: 164 },
-  IND_LV: { x: 480, y: 335, w: 84, nx: 530, ny: 326, anchor: 'start', v1y: 342, v2y: 358 },
-  RES_HV: { x: 770, y: 255, w: 84, nx: 770, ny: 240, anchor: 'middle', v1y: 198, v2y: 214 },
-  RES_LV: { x: 770, y: 395, w: 150, nx: 685, ny: 386, anchor: 'end', v1y: 402, v2y: 418 },
+  GRID: { x: 955, y: 145, w: 64, name: 'Grid Tie', nx: 955, ny: 128, anchor: 'middle', v1y: 168, v2y: 184 },
+  GSUB: { x: 185, y: 305, w: 96, name: 'Generation\nSubstation', nx: 128, ny: 280, anchor: 'end', v1y: 314, v2y: 330 },
+  IND_HV: { x: 480, y: 205, w: 84, name: 'Industrial HV', nx: 480, ny: 190, anchor: 'middle', v1y: 148, v2y: 164 },
+  IND_LV: { x: 480, y: 335, w: 84, name: 'Industrial LV', nx: 530, ny: 326, anchor: 'start', v1y: 342, v2y: 358 },
+  RES_HV: { x: 770, y: 255, w: 84, name: 'Residential HV', nx: 770, ny: 240, anchor: 'middle', v1y: 198, v2y: 214 },
+  RES_LV: { x: 770, y: 395, w: 150, name: 'Residential LV', nx: 685, ny: 386, anchor: 'end', v1y: 402, v2y: 418 },
 }
 
 interface LineDraw {
@@ -135,7 +136,9 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     const g = e('g', { class: 'live' })
     host.appendChild(g)
     e('rect', { x: b.x - b.w / 2, y: b.y - 3, width: b.w, height: 6, rx: 1, class: 'bar sketch' }, g)
-    text(g, b.nx, b.ny, 't-name', b.anchor, id)
+    b.name.split('\n').forEach((line, i) => {
+      text(g, b.nx, b.ny + i * 15, 't-name', b.anchor, line)
+    })
     busVal[id] = [
       text(g, b.nx, b.v1y, 't-val', b.anchor),
       text(g, b.nx, b.v2y, 't-val', b.anchor),
@@ -190,6 +193,7 @@ export function createDiagram(host: SVGSVGElement): DiagramHandle {
     host.appendChild(g)
     e('circle', { cx: GEN.x, cy: GEN.y, r: GEN.r, class: 'gen-circle sketch' }, g)
     text(g, GEN.x, GEN.y + 5, 't-name', 'middle', 'G')
+    text(g, GEN.x - GEN.r - 14, GEN.y + 4, 't-name', 'end', 'Generator')
     genVal = [
       text(g, GEN.x, GEN.y + 44, 't-val'),
       text(g, GEN.x, GEN.y + 60, 't-val'),
