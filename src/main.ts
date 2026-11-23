@@ -1,30 +1,43 @@
+import './style.css'
 import { makeBaseCase } from './network/baseCase'
 import { solvePowerFlow } from './solver/solve'
+import { initialControlState, buildCase } from './ui/state'
+import { createDiagram, Selection } from './ui/diagram'
+import { createPanel } from './ui/faceplate'
 
-// Part 1 placeholder harness — the one-line diagram UI replaces this in Part 2.
-const snap = solvePowerFlow(makeBaseCase())
+// Data flow: controls -> buildCase (immutable rebuild) -> pure solver ->
+// snapshot -> diagram + faceplates. The solver warm-starts from the previous
+// solution on every change.
+const base = makeBaseCase()
+const state = initialControlState(base)
 
-const el = document.getElementById('app')!
-const out: string[] = ['PowerDemo — solver harness (Part 1)', '']
-const f = (x: number, d = 2): string => x.toFixed(d)
+const svg = document.getElementById('diagram') as unknown as SVGSVGElement
+const badge = document.getElementById('sysbadge')!
+const panelHost = document.getElementById('panel')!
 
-if (snap.converged) {
-  for (const b of snap.buses) {
-    out.push(
-      `${b.id.padEnd(7)} ${f(b.vmagPu, 4)} pu  ${f(b.kv, 1).padStart(6)} kV  ${f(b.thetaDeg, 2).padStart(7)}°  P ${f(b.pMw, 1).padStart(6)} MW  Q ${f(b.qMvar, 1).padStart(6)} MVAR`,
-    )
-  }
-  out.push('')
-  for (const br of snap.branches) {
-    out.push(
-      `${br.id.padEnd(11)} ${br.from}→${br.to}  ${f(br.fromMw, 1).padStart(6)}/${f(br.toMw, 1).padStart(6)} MW  ${f(br.ampsFrom, 0).padStart(4)} A  load ${f(br.loadingPct, 1)}%`,
-    )
-  }
-  out.push('')
-  out.push(
-    `load ${f(snap.totals.loadMw, 1)} MW · gen ${f(snap.totals.genMw, 1)} MW · losses ${f(snap.totals.lossMw, 2)} MW · residual ${snap.totals.balanceResidualMw.toExponential(2)} MW · ${snap.iterations} iterations`,
-  )
-} else {
-  out.push('DID NOT CONVERGE')
+const diagram = createDiagram(svg)
+
+let input = buildCase(base, state)
+let snap = solvePowerFlow(input)
+
+function refresh(): void {
+  input = buildCase(base, state)
+  snap = solvePowerFlow(input, snap.converged ? snap.state : undefined)
+  diagram.update(snap, input)
+  panel.updateValues(snap, input)
+  badge.innerHTML = snap.converged
+    ? `load <b>${snap.totals.loadMw.toFixed(1)}</b> MW · gen <b>${snap.totals.genMw.toFixed(1)}</b> MW · losses <b>${snap.totals.lossMw.toFixed(2)}</b> MW · NR <b>${snap.iterations}</b> it`
+    : 'solver: <b>NOT CONVERGED</b>'
 }
-el.textContent = out.join('\n')
+
+const panel = createPanel(panelHost, base, state, refresh)
+
+function select(sel: Selection): void {
+  panel.select(sel)
+  diagram.setSelected(sel)
+}
+
+diagram.onSelect(select)
+panel.onDeselect(() => select(null))
+
+refresh()

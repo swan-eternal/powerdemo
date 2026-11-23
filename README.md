@@ -3,7 +3,11 @@
 Interactive small-power-system demo for GitHub Pages: a 7-bus network with a
 full Newton-Raphson power flow solved in the browser on every control change.
 
-Status: **Part 1 — solver core with tests, no UI yet.**
+**Live:** https://swan-eternal.github.io/powerdemo/
+
+Status: **Part 2 — one-line diagram with live values and controls.** Breakers,
+islanding and alarms arrive in Part 3; reactive limits, LTC and ZIP loads in
+Part 4.
 
 ## Commands
 

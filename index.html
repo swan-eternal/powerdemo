@@ -3,10 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PowerDemo</title>
+    <title>PowerDemo — Small System One-Line</title>
   </head>
   <body>
-    <pre id="app"></pre>
+    <header id="topbar">
+      <h1>PowerDemo</h1>
+      <div id="sysbadge"></div>
+    </header>
+    <div id="offline-banner">SOLVER DID NOT CONVERGE — REDUCE LOAD OR RESTORE CONTROLS</div>
+    <main id="layout">
+      <section id="diagram-wrap">
+        <svg id="diagram" viewBox="0 0 1080 580" role="img" aria-label="One-line diagram"></svg>
+      </section>
+      <aside id="panel"></aside>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
